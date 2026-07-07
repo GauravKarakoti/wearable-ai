@@ -1,0 +1,35 @@
+# Wearable AI Workshop starter kit — pinned for reproducibility.
+#
+# Validated on Linux + CUDA 12.8, Python 3.10.
+#
+# Install PyTorch with CUDA first (the pinned versions below assume cu128):
+#   pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu128
+# Adjust the --index-url to match your CUDA version. Then:
+#   pip install -r requirements.txt
+
+# Core ML / inference stack
+torch==2.10.0
+torchvision==0.25.0
+transformers==5.8.1
+tokenizers==0.22.2
+accelerate==1.13.0
+huggingface_hub==1.15.0
+
+# Multimodal inputs (video frame extraction, image processing)
+opencv-python-headless==4.13.0.92
+Pillow==12.2.0
+qwen-vl-utils==0.0.14
+
+# Numerics (transitively pulled by torch/transformers; pinned to avoid drift)
+numpy==2.2.6
+scipy==1.15.3
+
+# Evaluation: BLEU + LLM-judge text scoring
+nltk==3.9.4
+sacrebleu==2.6.0
+portalocker==3.2.0
+
+# vLLM serving backend (optional for `--backend hf`, required for `--backend vllm`)
+# We pin to 0.19.1; later vLLM versions change the OpenAI server CLI surface
+# and may regress on the Scout MoE + online FP8 quant path validated here.
+vllm==0.19.1
