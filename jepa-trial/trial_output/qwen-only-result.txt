@@ -1,0 +1,4 @@
+Video: sample.mp4
+Question: What was the first product I interacted with and the last product I interacted with in the video?
+Qwen answer: The first product you interacted with was a pair of shorts, and the last product you interacted with was a pair of sweatpants.
+Ground truth: A greeting card with a taco and margarita design and a teal short-sleeve shirt.

@@ -1,0 +1,5 @@
+NOTE: bridge layer is untrained/random. Output is expected to be incoherent.
+Video: sample.mp4
+Question: What was the first product I interacted with and the last product I interacted with in the video?
+Output: The first product I interacted with in the video was a bottle of water, and the last product I interacted with in the video was a bottle of water.
+Ground truth: A greeting card with a taco and margarita design and a teal short-sleeve shirt.
