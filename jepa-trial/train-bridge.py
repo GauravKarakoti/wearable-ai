@@ -35,7 +35,7 @@ JEPA_MODEL_ID = "facebook/vjepa2-vitl-fpc64-256"
 QWEN_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 NUM_VIDEO_TOKENS = 16
 MAX_NEW_TOKENS = 256
-TIME_BUDGET_SECONDS = 9 * 60
+TIME_BUDGET_SECONDS = 11 * 60
 LEARNING_RATE = 1e-4
 HELD_OUT_COUNT = 2
 MIN_LIBRARY_SIZE_FOR_HOLDOUT = 6
@@ -51,54 +51,54 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 NEW_BATCH = [
     {
-        "video_id": "1eeba816eee3ed2e",
-        "question": "What circus did I see a tent for in the distance before later seeing its box office up close?",
-        "answer": "Big Apple Circus",
+        "video_id": "21223c1e14298faf",
+        "question": "I noticed a utility box with a honeycomb and bee design outside the store. Later, inside, I passed an aisle with a sign listing 'Syrup / Honey'. What was the aisle number?",
+        "answer": "9",
     },
     {
-        "video_id": "1f254ca918b0ded0",
-        "question": "What did I do with the potato slices after I rinsed them, and what was I cooking on the stove while they were frying?",
-        "answer": "I fried the potato slices in the deep fryer and cooked hot dogs on the stove.",
+        "video_id": "2192e93a36108081",
+        "question": "What was the title of the children's book I saw later that featured a protagonist of the same race as the author whose contact sheet and framed portrait I saw in an earlier exhibit?",
+        "answer": "The Snowy Day",
     },
     {
-        "video_id": "1f2fa2af1378221e",
-        "question": "How was the spice I ground in the mortar and pestle ultimately used on the meat, and what was the final covering applied to the meat?",
-        "answer": "The ground spice was mixed with other ingredients and used to coat the meat, which was then first wrapped in clear plastic and finally encased in white mesh netting.",
+        "video_id": "21a625ead630c23e",
+        "question": "After I saw the LEGO-themed storage containers, what was the price of the first plant-related item I physically handled that had a visible price tag?",
+        "answer": "$19.99",
     },
     {
-        "video_id": "2012d6ccb98cc62f",
-        "question": "After putting the foil-covered pan in the oven, what did I do with the block of cheddar cheese I retrieved from the fridge?",
-        "answer": "I weighed a portion of it and then grated that portion.",
+        "video_id": "22d2c11a300d339d",
+        "question": "Where did I place the leaf blower's battery after using it near the house, as shown later in the video?",
+        "answer": "On the workbench in the garage.",
     },
     {
-        "video_id": "202443eaab5cfd04",
-        "question": "Early in the video, I saw a display with a quote from a child who donated $1 for the Statue of Liberty's pedestal in 1885. Later, I saw a display about the Centennial Restoration mentioning schoolchildren's donations. What was the amount donated by schoolchildren in the later restoration, and what year was the earlier child's donation?",
-        "answer": "$6 million and 1885",
+        "video_id": "231fceaac1eb5cac",
+        "question": "Earlier I saw a price key at the pottery booth where a green dot indicated a specific price; later I picked up a green-labeled Essential Candy package. What was the price for the green dot and what was the primary claimed benefit of that candy?",
+        "answer": "$38 and energy and focus",
     },
     {
-        "video_id": "204df747cf88e632",
-        "question": "After I rode the escalator down to the lower level and passed a large bear-shaped clothing display, what was the name on the tag of the plush bear I later picked up in that same department?",
-        "answer": "Brannan",
+        "video_id": "2341ee3265018e40",
+        "question": "What decorative feature, first noticed in the background when I saw the wooden bench among fallen leaves, did I later spot again in the distance while walking along a grassy path flanked by bushes?",
+        "answer": "The ornate planter on a pedestal.",
     },
     {
-        "video_id": "205a1ef3950ef283",
-        "question": "After I removed the wheels from the bike, what did I do to them before I rode the bike?",
-        "answer": "I inflated them with a pump.",
+        "video_id": "23648f41073ebd8b",
+        "question": "What was the last food truck I passed on 5th Avenue before entering Central Park?",
+        "answer": "A crepes food truck.",
     },
     {
-        "video_id": "20665aadf887aa08",
-        "question": "Which garden listed on the signpost had I already visited earlier, as indicated by a large metal sculpture I encountered?",
-        "answer": "Butterfly Garden",
+        "video_id": "237a3e63ab210d19",
+        "question": "What was the first theme park I researched in the guidebook, and what was the last resort I wrote about on my notepad?",
+        "answer": "Magic Kingdom (Walt Disney World) and Universal Orlando.",
     },
     {
-        "video_id": "2077ea2f35583ff6",
-        "question": "After I finished soaking the eggplant slices, what was the next food I prepared, and which tool did I reuse from the eggplant preparation?",
-        "answer": "I prepared chicken next, reusing the knife that I had used to slice the eggplant.",
+        "video_id": "2385a167af30bd35",
+        "question": "I passed a large concrete overpass early on and later rode through a tunnel. What is the relationship between the overpass and the tunnel, and how did my position change relative to the overpass?",
+        "answer": "The tunnel is the underpass of the same overpass; I first rode alongside the overpass's base and later rode through the tunnel beneath it.",
     },
     {
-        "video_id": "20b7e0d8cf3e158a",
-        "question": "After seeing the weekly digital deal for red seedless grapes, what was the price of the other weekly digital deal I checked on my phone in the tomato section?",
-        "answer": "$1.99",
+        "video_id": "239c596fbc5ff872",
+        "question": "After seeing the activity schedule earlier, I later made a craft. What was the craft and where did I hold the finished item?",
+        "answer": "Jingle Bell Craft; held near the fireplace mantel decorated with a poinsettia and lantern.",
     },
 ]
 
