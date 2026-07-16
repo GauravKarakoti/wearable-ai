@@ -23,16 +23,16 @@ BRIDGE_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, "persistent_bridge.pt")
 RESULTS_LOG_PATH = os.path.join(OUTPUT_DIR, "persistence_test_log.jsonl")
 
 TEST_VIDEO_IDS = [
-    "10551b47266ed669",
-    "11169ccb03d4be05",
-    "112df40f97bbcd42",
-    "1143e4c2d086afa1",
-    "11b5a30e313af367",
-    "11c6e381488dcff7",
-    "11dc8afb864c685a",
-    "11ec20a79ad47910",
-    "12862b1069d474fb",
-    "12a73e1b23a7826d",
+    "130b87bbc7e7f759",
+    "13604bf4b9661f8b",
+    "13aea9ab404e96a6",
+    "14566bef49541482",
+    "146b8053e4a93b9c",
+    "14a8ff92adb183c7",
+    "156cc97ac25e1078",
+    "156e2e7dc7ea203a",
+    "15ac76d47c8753f9",
+    "15eeddc94cbfe9e3",
 ]
 
 

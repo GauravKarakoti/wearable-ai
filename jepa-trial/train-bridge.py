@@ -51,54 +51,54 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 NEW_BATCH = [
     {
-        "video_id": "11c6e381488dcff7",
-        "question": "After I removed the plastic bag from the closet, where did the purple package that was inside it end up?",
-        "answer": "In the red suitcase.",
+        "video_id": "14a8ff92adb183c7",
+        "question": "What tools did I use to clean up the spilled beans before washing them in the sink?",
+        "answer": "A broom and a handheld vacuum",
     },
     {
-        "video_id": "11dc8afb864c685a",
-        "question": "Earlier I saw someone pushing a blue cart down the beach; when I saw that same cart again later, what were people doing around it?",
-        "answer": "They were setting up a surfboard and beach gear next to the cart near the shoreline.",
+        "video_id": "156cc97ac25e1078",
+        "question": "When I first saw the person in the blue shirt, what were they doing, and after I looked at the fence on the opposite side of the bridge from the river, what were they doing when I saw them again?",
+        "answer": "They were leaning on the railing looking at the river; they were walking away from me.",
     },
     {
-        "video_id": "11ec20a79ad47910",
-        "question": "After passing the wooden trail post, what did I see in the distance, and what earlier trail feature was located on the same side of the trail as that post?",
-        "answer": "A distant body of water and an uprooted tree root mass.",
+        "video_id": "156e2e7dc7ea203a",
+        "question": "What item was in my cart when I first browsed the candle section and still there when I later examined Elf on the Shelf products?",
+        "answer": "The dip mix collection",
     },
     {
-        "video_id": "12862b1069d474fb",
-        "question": "What plant label did I see between touching the vibrant purple berries and pointing at the insect galleries on the fallen log?",
-        "answer": "Stiff Tickseed (Coreopsis palmata)",
+        "video_id": "15ac76d47c8753f9",
+        "question": "Why didn't the two people I saw on the concrete path later react to the snake I encountered earlier, and where was the snake in relation to the path?",
+        "answer": "The snake was in the undergrowth off the concrete path, so the people on the path did not encounter it.",
     },
     {
-        "video_id": "12a73e1b23a7826d",
-        "question": "What was the first product I interacted with and the last product I interacted with in the video?",
-        "answer": "A greeting card with a taco and margarita design and a teal short-sleeve shirt.",
+        "video_id": "15eeddc94cbfe9e3",
+        "question": "After passing the mural of Michael K. Williams on the brick building, what prominent monument did I later see in the park I entered?",
+        "answer": "Prison Ship Martyrs' Monument",
     },
     {
-        "video_id": "130b87bbc7e7f759",
-        "question": "When I opened the drawer labeled 'MAGNETIC STIR BARS' and later the drawer labeled 'ZETASIZER ESSENTIALS', what discrepancy did I observe between the labels and their contents?",
-        "answer": "The 'MAGNETIC STIR BARS' drawer contained Malvern Zetasizer Nano Series boxes, while the 'ZETASIZER ESSENTIALS' drawer held unrelated items like a Trypsin box and instruction manuals.",
+        "video_id": "166ed6f9ba6e5dea",
+        "question": "What piece of equipment, which I later saw on the sidewalk, likely made the tire tracks visible in both the backyard and front lawn?",
+        "answer": "The small skid steer loader",
     },
     {
-        "video_id": "13604bf4b9661f8b",
-        "question": "After I saw the 'NO PED CROSSING' sign, I later passed a car wash. What was the name of the pharmacy I saw between those two points?",
-        "answer": "Curson Pharmacy",
+        "video_id": "17628f735391242b",
+        "question": "What did the app identify when I first lifted the brick, and what did I do with that brick later?",
+        "answer": "Insects; I placed it back in its original position.",
     },
     {
-        "video_id": "13aea9ab404e96a6",
-        "question": "Earlier I saw a decorated jar from the Middle Predynastic period, and later a silver ewer from the Early Byzantine era. What is the approximate number of years between the creation of these two artifacts?",
-        "answer": "Approximately 3,600 years (the jar is ~3300\u20133100 BC, the ewer is late 4th\u2013early 5th century AD).",
+        "video_id": "17ddbc3d41cea677",
+        "question": "I first saw the modern building with a diamond-patterned facade from behind a black fence, and later from a bridge over railroad tracks. What did I do between these two views to reach the higher vantage point?",
+        "answer": "I rode the elevator.",
     },
     {
-        "video_id": "14566bef49541482",
-        "question": "After I parked and walked through the gardens with signs about prepping for winter and leaving dead plant stems, what radio station was on my phone when I was still in the car?",
-        "answer": "Cincinnati's Hit Music 102",
+        "video_id": "17ffed5d482095b5",
+        "question": "What did I take from the red structure I encountered between the Bruer Building and the Moss Building?",
+        "answer": "A coloring page",
     },
     {
-        "video_id": "146b8053e4a93b9c",
-        "question": "After taking the escalator in the terminal, I later waited in a crowded area to board the ferry. What was the name of the ferry I boarded, and what object that I saw on the escalator was also visible in the boarding area?",
-        "answer": "The ferry was named MICHAEL H. OLLIS, and a green Statue of Liberty crown accessory was visible on both the escalator and in the boarding area.",
+        "video_id": "1881e98bd8759b6f",
+        "question": "Where did I spread the yellow granules both before and after I had to refill the blue bucket?",
+        "answer": "Around the curved stone planter in the backyard.",
     },
 ]
 
@@ -156,7 +156,8 @@ def embed_new_batch(device):
         ).transpose(1, 2).squeeze(0).cpu()
 
         torch.save(
-            {"embedding": pooled, "question": ex["question"], "answer": ex["answer"]},
+            {"embedding": pooled, "question": ex["question"],
+            "answer": ex["answer"]},
             library_path(ex["video_id"]),
         )
         print(f"  Saved embedding for {ex['video_id']}. Raw video left at {video_path} -- delete manually when ready.")
