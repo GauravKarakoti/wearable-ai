@@ -1,17 +1,22 @@
 """
 train-bridge.py -- persistent, incremental bridge training.
+Now with automated video downloading from Hugging Face baked into the
+embedding step -- no more manually placing .mp4 files next to the script.
 
 WORKFLOW:
-  1. Put ~10 new (video, question, answer) entries in NEW_BATCH below,
-     with the videos physically present at those paths.
+  1. Put ~10 new (video_id, question, answer) entries in NEW_BATCH below.
+     video_path is no longer needed -- the script downloads each video by
+     video_id automatically.
   2. Run this script. It will:
-       - embed any NEW_BATCH videos not already in the library
+       - download any NEW_BATCH videos not already embedded
+       - embed them, cache the (tiny) embedding, then leave the raw .mp4
+         on disk (deletion is NOT automatic -- delete manually when ready)
        - load the existing bridge checkpoint (or init fresh if none exists)
        - train on the full library (old + new) for TIME_BUDGET_SECONDS
        - save the updated checkpoint back to BRIDGE_CHECKPOINT_PATH
        - report a quick held-out eval if the library is big enough
-  3. Delete the raw videos you just embedded (their embeddings are safely
-     cached in EMBEDDING_LIBRARY_DIR now) to free disk space.
+  3. Delete downloaded videos yourself once you're done with them, from
+     SAVE_DIR (see below) -- this script will not do it for you.
   4. Next session: fill NEW_BATCH with the next 10 videos, repeat.
 """
 
@@ -22,6 +27,7 @@ import time
 import torch
 import torch.nn as nn
 
+from huggingface_hub import hf_hub_download
 from transformers import AutoModel, AutoVideoProcessor, AutoModelForCausalLM, AutoTokenizer
 from trial import load_video_frames
 
@@ -34,71 +40,65 @@ LEARNING_RATE = 1e-4
 HELD_OUT_COUNT = 2
 MIN_LIBRARY_SIZE_FOR_HOLDOUT = 6
 
+HF_REPO_ID = "facebook/wearable-ai"
+SAVE_DIR = "."
+
 OUTPUT_DIR = "./trial_output"
 EMBEDDING_LIBRARY_DIR = os.path.join(OUTPUT_DIR, "embedding_library")
 BRIDGE_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, "persistent_bridge.pt")
 os.makedirs(EMBEDDING_LIBRARY_DIR, exist_ok=True)
+os.makedirs(SAVE_DIR, exist_ok=True)
 
 NEW_BATCH = [
     {
-        "video_id": "08910129d9d6ff34",
-        "video_path": "08910129d9d6ff34.mp4",
-        "question": "What container did I fill with water in the kitchen that I later carried through the hallway?",
-        "answer": "The black watering can.", "mcq_options": "A. The clear water filter pitcher. B. The black watering can. C. The copper pot from the sink. D. The stainless steel kettle.",
+        "video_id": "0df064a955d50897",
+        "question": "After I attached the green mesh to the metal posts, what tool did I use to separate the roll, and where was the remaining roll afterward?",
+        "answer": "I used scissors to cut the mesh, and the remaining roll was left on the ground near the white chicken coop.",
     },
     {
-        "video_id": "08a129d4d3455f91",
-        "video_path": "08a129d4d3455f91.mp4",
-        "question": "After using the clear plastic container to rinse the tomato at the sink, what did I later use that same container for?",
-        "answer": "To hold and beat the eggs.", "mcq_options": "A. To store the diced tomatoes. B. To collect the garlic and onion peels. C. To hold and beat the eggs. D. To hold the red hot seasoning.",
+        "video_id": "0efc268990f5588b",
+        "question": "After removing the original alloy wheel, why did I need to get lug nuts from the plastic bag on the ground instead of reusing the ones I had just removed?",
+        "answer": "The steel replacement wheel required different lug nuts than the alloy wheel, so I retrieved the correct ones from the plastic bag.",
     },
     {
-        "video_id": "09293dae75c227b2",
-        "video_path": "09293dae75c227b2.mp4",
-        "question": "Why did I open the refrigerator near the end of the video, and what earlier activity prompted this?",
-        "answer": "I opened the refrigerator to store the ice trays I had filled with water at the sink earlier.", "mcq_options": "A. I opened the refrigerator to get milk for the iced tea I was preparing with the tea bag and tumbler earlier. B. I opened the refrigerator to put away the electric kettle after it finished boiling water for the tea. C. I opened the refrigerator to store the ice trays I had filled with water at the sink earlier. D. I opened the refrigerator to store the leftover tea from the stainless steel tumbler I had rinsed at the sink.",
+        "video_id": "0f1e1d0da216585c",
+        "question": "Earlier I saw a sign for the Old Stage Road that mentioned Rocky Mount as a stop where horses were changed; which family did I later learn owned Rocky Mount in the 19th century?",
+        "answer": "The Massengill family",
     },
     {
-        "video_id": "09ea3872eb883ec1",
-        "video_path": "09ea3872eb883ec1.mp4",
-        "question": "Later in my walk, I saw a tram with an illustration on its side. What was the illustration, and which earlier landmark did it correspond to?",
-        "answer": "The tram had an illustration of the White Rabbit, which corresponded to the White Rabbit statue I passed earlier near the circular fountain.", "mcq_options": "A. The tram had an illustration of a dodo bird, which corresponded to the dodo bird sign I saw earlier near the grassy hill. B. The tram had an illustration of a pumpkin, which corresponded to the jack-o'-lantern display I passed earlier near the wooden fence. C. The tram had an illustration of the White Rabbit, which corresponded to the White Rabbit statue I passed earlier near the circular fountain. D. The tram had an illustration of a caucus race, which corresponded to the 'Run your best caucus race!' sign I saw earlier.",
+        "video_id": "0f5a78b48827083d",
+        "question": "Early in the video, I saw a museum with blue banners; later, I walked under scaffolding past a bakery. What were the names of the museum and the bakery?",
+        "answer": "Museum of Illusions; Patis",
     },
     {
-        "video_id": "0a7538816b38423d",
-        "video_path": "0a7538816b38423d.mp4",
-        "question": "Earlier I saw a building with a sign reading 'Jerry's Rogue River Museum & Gift Shop'. Later, at a different location, I read a sign indicating where that museum is situated relative to my current position. What did the later sign say about the museum's location?",
-        "answer": "The sign said the museum was 'Right across the street' from the tour office.", "mcq_options": "A. The sign said the museum was 'In the same building' as the tour office. B. The sign said the museum was 'Right across the street' from the tour office. C. The sign said the museum was 'Next to the dock' where the jet boats are moored. D. The sign said the museum was 'Behind the main parking lot' near the forested hills.",
+        "video_id": "0fe0ca9e8cfad75f",
+        "question": "Which dog did I take outside, and where was the other dog last seen indoors?",
+        "answer": "The gray dog with the leopard vest; the white dog on the gray couch.",
     },
     {
-        "video_id": "0b38cc26c3cf4364",
-        "video_path": "0b38cc26c3cf4364.mp4",
-        "question": "I moved an object from the floor to the kitchen island during the video. What was the object and where was it first located?",
-        "answer": "A blue circular lid; on the wooden floor near the stove.", "mcq_options": "A. A clear plastic bowl; on the wooden floor near the stove. B. A blue circular lid; on the pantry shelf next to the refrigerator. C. A blue circular lid; on the wooden floor near the stove. D. A glass jar with off-white substance; on the wooden floor near the dishwasher.",
+        "video_id": "10551b47266ed669",
+        "question": "When I first saw the 'SPEED BUMP 15' sign, what was on the road to my left, and how did it differ the second time I saw the same sign?",
+        "answer": "First time, there were parked cars and residential houses; second time, there was a construction site with a red dumpster, workers in red shirts, and traffic cones.",
     },
     {
-        "video_id": "0b941d85cf228741",
-        "video_path": "0b941d85cf228741.mp4",
-        "question": "What institution was associated with the building visible behind the Christmas tree I saw in the park, and what signage later on the street confirmed this?",
-        "answer": "The New York Public Library, confirmed by 'New York Public Library' banners on buildings along the street.", "mcq_options": "A. The Bank of America, confirmed by 'Bank of America Winter Village' banner near the ice rink. B. The Rockefeller Center, confirmed by 'ROCK' signage on a construction-covered building. C. The New York Public Library, confirmed by 'New York Public Library' banners on buildings along the street. D. The CityMD clinic, confirmed by 'CityMD' signage on Madison Avenue.",
+        "video_id": "11169ccb03d4be05",
+        "question": "Early in my walk, I saw a sign explaining a dendrometer band that mentioned NYC trees' annual carbon storage. Later, I passed an area with a chalkboard stating it was resting for winter and an entrance sign. What is the name of this area, and what was the carbon storage figure from the earlier sign?",
+        "answer": "Children's Garden; 1.2 million tons of carbon",
     },
     {
-        "video_id": "0c2a202bcee2ec87",
-        "video_path": "0c2a202bcee2ec87.mp4",
-        "question": "After I first saw the Willis Tower and Graceland replicas in Miniland, I later climbed a series of stairs with green treads and blue railings. What was the name of the attraction I reached at the top of those stairs, and what Miniland landmark did I view just before I started climbing?",
-        "answer": "Ninjago The Ride; the United States Capitol building.", "mcq_options": "A. LEGO Castle; the Washington Monument. B. Miniland Delights; the Jefferson Memorial. C. Ninjago The Ride; the United States Capitol building. D. LEGO City Water Playground; the Lincoln Memorial.",
+        "video_id": "112df40f97bbcd42",
+        "question": "What did I do with the paper that had 'Wanderers' written on it after I had previously interacted with the rainbow ribbon wand?",
+        "answer": "I picked it up from the floor and folded it.",
     },
     {
-        "video_id": "0cf8454cd2d6f863",
-        "video_path": "0cf8454cd2d6f863.mp4",
-        "question": "Which character did I first see on a large digital screen and later encounter as a physical statue near the stairs?",
-        "answer": "Mario", "mcq_options": "A. Link B. Kirby C. Pikachu D. Mario",
+        "video_id": "1143e4c2d086afa1",
+        "question": "After I checked the store directory, what was the number of the store I entered, and what was the price of the doorbuster item I saw inside?",
+        "answer": "1288, $49.95",
     },
     {
-        "video_id": "0de357266f10df86",
-        "video_path": "0de357266f10df86.mp4",
-        "question": "The first time I saw the man in the black jacket with another person, who was he with, and who was he with the last time I saw him with another person?",
-        "answer": "First with a woman in black clothing and white sneakers; last with a woman in a gray hoodie and black leggings.", "mcq_options": "A. First with a woman in gray hoodie and black leggings; last with a woman in black clothing and white sneakers. B. First with a woman in black clothing and white sneakers; last with a person with a tattooed arm, black pants, and white sneakers. C. First with a woman in black clothing and white sneakers; last with a woman in a gray hoodie and black leggings. D. First with a woman in black clothing and white sneakers; last with a woman in a light gray hoodie and blue jeans.",
+        "video_id": "11b5a30e313af367",
+        "question": "What sauce did I add to my wrap after I saw the woman dip her chips in the white sauce?",
+        "answer": "Barbecue sauce",
     },
 ]
 
@@ -107,8 +107,27 @@ def library_path(video_id):
     return os.path.join(EMBEDDING_LIBRARY_DIR, f"{video_id}.pt")
 
 
+def download_video(video_id):
+    """Download one video by id from the HF dataset repo. Returns the local
+    path, or None if the download failed (entry is skipped, not fatal)."""
+    file_name = f"{video_id}.mp4"
+    try:
+        video_path = hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=f"egolongqa/val/{file_name}",
+            repo_type="dataset",
+            local_dir=SAVE_DIR,
+        )
+        return video_path
+    except Exception as e:
+        print(f"  Failed to download {video_id}: {e}")
+        return None
+
+
 def embed_new_batch(device):
-    """Encode only the videos not already in the library, then free V-JEPA2 from memory."""
+    """Download + encode only the videos not already in the embedding library,
+    then free V-JEPA2 from memory. Downloaded .mp4s are left on disk --
+    delete them yourself when you're done, this function will not."""
     to_embed = [ex for ex in NEW_BATCH if not os.path.exists(library_path(ex["video_id"]))]
     if not to_embed:
         print("All videos in NEW_BATCH are already in the library. Nothing to encode.")
@@ -121,8 +140,14 @@ def embed_new_batch(device):
     num_frames = model.config.frames_per_clip
 
     for ex in to_embed:
-        print(f"  Encoding {ex['video_id']} ({ex['video_path']}) ...")
-        frames = load_video_frames(ex["video_path"], num_frames=num_frames)
+        print(f"--- {ex['video_id']} ---")
+        video_path = download_video(ex["video_id"])
+        if video_path is None:
+            print(f"  Skipping {ex['video_id']} (download failed).")
+            continue
+
+        print(f"  Encoding {ex['video_id']} ({video_path}) ...")
+        frames = load_video_frames(video_path, num_frames=num_frames)
         inputs = processor(frames, return_tensors="pt").to(device)
         with torch.no_grad():
             out = model(**inputs).last_hidden_state
@@ -134,11 +159,12 @@ def embed_new_batch(device):
             {"embedding": pooled, "question": ex["question"], "answer": ex["answer"]},
             library_path(ex["video_id"]),
         )
+        print(f"  Saved embedding for {ex['video_id']}. Raw video left at {video_path} -- delete manually when ready.")
 
     del model
     if device == "cuda":
         torch.cuda.empty_cache()
-    print(f"Embedded {len(to_embed)} new video(s). You can now delete their raw .mp4 files.")
+    print(f"\nEmbedded {len([e for e in to_embed if os.path.exists(library_path(e['video_id']))])} new video(s).")
 
 
 def load_full_library():
@@ -276,8 +302,7 @@ def main():
             print(f"Output: {output_text}")
             print(f"Ground truth: {entry['answer']}")
 
-    print(f"\nRaw videos safe to delete now (already embedded): "
-          f"{[ex['video_path'] for ex in NEW_BATCH]}")
+    print(f"\nDownloaded videos are in {SAVE_DIR} -- delete them yourself once you're done with this batch.")
 
 
 if __name__ == "__main__":
