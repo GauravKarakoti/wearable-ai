@@ -1,32 +1,16 @@
 """
 test_persistent.py -- check whether the bridge still "remembers" earlier
-batches after subsequent training runs on newer/larger batches.
+batches after subsequent training runs on newer batches.
 
-UPDATED to match the scaled-up train_bridge.py:
-  - Defaults to testing the SAME fixed held-out set train_bridge.py created
-    (read from holdout_ids.json) -- this is now the canonical, comparable
-    evaluation set across all your sessions, not something re-typed by hand
-    each time. At 700 videos, manually pasting video_ids isn't practical.
-  - You can still override with an explicit TEST_VIDEO_IDS list below if
-    you specifically want to probe an arbitrary earlier batch (e.g. "did
-    the very first 10 videos survive 6 rounds of later training?").
-  - Embedding library location/format is unchanged by the hard-drive
-    switch -- this script still only reads cached .pt files, never touches
-    raw video or the hard drive at all.
-
-WORKFLOW:
-  1. train_bridge.py (any number of rounds, any BATCH_SIZE)
-  2. test_persistent.py with no override -> tests the fixed held-out set
-     train_bridge.py has been checking after every session anyway, but as
-     a standalone script you can run any time without retraining.
-  3. Or set TEST_VIDEO_IDS explicitly to probe a specific earlier batch.
+WORKFLOW THIS SUPPORTS:
+  1. train_bridge.py on batch 1 (10 videos) -> delete those .mp4s
+  2. train_bridge.py on batch 2 (10 new videos) -> delete those .mp4s
+  3. test_persistent.py with batch 1's video_ids -> did batch 2's training
+     overwrite what was learned from batch 1, or did it retain it?
 """
 
 import os
-import json
-import glob
 import torch
-import torch.nn as nn
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -36,14 +20,24 @@ MAX_NEW_TOKENS = 256
 OUTPUT_DIR = "./trial_output"
 EMBEDDING_LIBRARY_DIR = os.path.join(OUTPUT_DIR, "embedding_library")
 BRIDGE_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, "persistent_bridge.pt")
-HOLDOUT_IDS_PATH = os.path.join(OUTPUT_DIR, "holdout_ids.json")
 RESULTS_LOG_PATH = os.path.join(OUTPUT_DIR, "persistence_test_log.jsonl")
 
-# Leave empty to default to the fixed held-out set from holdout_ids.json.
-TEST_VIDEO_IDS = []
+TEST_VIDEO_IDS = [
+    "2341ee3265018e40",
+    "23648f41073ebd8b",
+    "237a3e63ab210d19",
+    "2385a167af30bd35",
+    "239c596fbc5ff872",
+    "248697710277f829",
+    "24b25f579fb8a8ff",
+    "25a487bbb0c6a04e",
+    "25f01498bfb69520",
+    "262682622af0eb9d",
+]
 
 
 def load_bridge_architecture(jepa_hidden, qwen_hidden, device, dtype):
+    import torch.nn as nn
     bridge = nn.Sequential(
         nn.Linear(jepa_hidden, qwen_hidden),
         nn.GELU(),
@@ -52,48 +46,33 @@ def load_bridge_architecture(jepa_hidden, qwen_hidden, device, dtype):
     return bridge
 
 
-def resolve_test_ids():
+def load_entries_to_test():
     if TEST_VIDEO_IDS:
-        print(f"Using explicit TEST_VIDEO_IDS override ({len(TEST_VIDEO_IDS)} videos).")
-        return TEST_VIDEO_IDS
-
-    if os.path.exists(HOLDOUT_IDS_PATH):
-        with open(HOLDOUT_IDS_PATH) as f:
-            ids = json.load(f)
-        print(f"No override set -- using the fixed held-out set from {HOLDOUT_IDS_PATH} "
-              f"({len(ids)} videos).")
-        return ids
-
-    print(f"No TEST_VIDEO_IDS override and no {HOLDOUT_IDS_PATH} found yet "
-          f"(train_bridge.py creates this once the library reaches its minimum size). "
-          f"Falling back to testing the entire embedding library.")
-    return None  # signals "test everything in the library"
-
-
-def load_entries_to_test(ids_to_test):
-    entries = []
-    if ids_to_test is None:
-        paths = sorted(glob.glob(os.path.join(EMBEDDING_LIBRARY_DIR, "*.pt")))
-        for path in paths:
+        entries = []
+        for vid in TEST_VIDEO_IDS:
+            path = os.path.join(EMBEDDING_LIBRARY_DIR, f"{vid}.pt")
+            if not os.path.exists(path):
+                print(f"  WARNING: no cached embedding found for video_id '{vid}' -- skipping. "
+                      f"(Was it actually embedded in a previous train_bridge.py run?)")
+                continue
+            data = torch.load(path)
+            data["video_id"] = vid
+            entries.append(data)
+        return entries
+    else:
+        import glob
+        entries = []
+        for path in sorted(glob.glob(os.path.join(EMBEDDING_LIBRARY_DIR, "*.pt"))):
             data = torch.load(path)
             data["video_id"] = os.path.splitext(os.path.basename(path))[0]
             entries.append(data)
         return entries
 
-    for vid in ids_to_test:
-        path = os.path.join(EMBEDDING_LIBRARY_DIR, f"{vid}.pt")
-        if not os.path.exists(path):
-            print(f"  WARNING: no cached embedding found for video_id '{vid}' -- skipping.")
-            continue
-        data = torch.load(path)
-        data["video_id"] = vid
-        entries.append(data)
-    return entries
-
 
 def rough_word_overlap(pred, truth):
-    """Crude, quick similarity signal -- NOT a real metric. For the paper,
-    use the LLM-judge rubric approach discussed earlier instead."""
+    """Crude, quick similarity signal -- NOT a real metric. Just for fast eyeballing
+    across many runs. For anything you'd put in the paper, use the LLM-judge
+    rubric approach discussed earlier instead."""
     pred_words = set(pred.lower().split())
     truth_words = set(truth.lower().split())
     if not truth_words:
@@ -107,21 +86,23 @@ def main():
 
     if not os.path.exists(BRIDGE_CHECKPOINT_PATH):
         raise FileNotFoundError(
-            f"No checkpoint found at {BRIDGE_CHECKPOINT_PATH}. Run train_bridge.py first."
+            f"No checkpoint found at {BRIDGE_CHECKPOINT_PATH}. "
+            f"Run train_bridge.py at least once before testing persistence."
         )
 
-    ids_to_test = resolve_test_ids()
-    entries = load_entries_to_test(ids_to_test)
+    entries = load_entries_to_test()
     if not entries:
-        print("No entries to test. Exiting.")
+        print("No entries to test (check TEST_VIDEO_IDS or the embedding library). Exiting.")
         return
     print(f"Testing {len(entries)} cached video(s): {[e['video_id'] for e in entries]}")
 
-    print(f"\nLoading text backbone: {QWEN_MODEL_ID}")
+    print(f"\nLoading Qwen2-VL: {QWEN_MODEL_ID}")
     tokenizer = AutoTokenizer.from_pretrained(QWEN_MODEL_ID)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    qwen = AutoModelForCausalLM.from_pretrained(QWEN_MODEL_ID, torch_dtype=torch.float32, device_map="auto")
+    qwen = AutoModelForCausalLM.from_pretrained(
+        QWEN_MODEL_ID,
+        torch_dtype=torch.float32,
+        device_map="auto",
+    )
     qwen.eval()
 
     qwen_hidden = qwen.get_input_embeddings().weight.shape[1]
@@ -169,11 +150,12 @@ def main():
     print(f"\n--- SUMMARY ---")
     print(f"Tested: {len(results)}  |  Empty outputs: {empty_count}  |  Avg rough word overlap: {avg_overlap:.2f}")
 
+    import json
     with open(RESULTS_LOG_PATH, "a") as f:
         for r in results:
             f.write(json.dumps(r) + "\n")
-    print(f"\nAppended results to {RESULTS_LOG_PATH} -- run this after each training session "
-          f"to build up a persistence/forgetting curve over time.")
+    print(f"\nAppended results to {RESULTS_LOG_PATH} -- run this after each new training batch")
+    print("to build up a persistence/forgetting curve over time.")
 
 
 if __name__ == "__main__":
