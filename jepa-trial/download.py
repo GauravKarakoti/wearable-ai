@@ -17,7 +17,7 @@ HF_VIDEO_SUBDIR = "egolongqa/val"
 MANIFEST_PATH = "../egolongqa/wearable_ai_2026_egolongqa_val_700.jsonl"
 HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos"
 
-BATCH_SIZE = 100
+BATCH_SIZE = None
 
 
 def load_manifest():
