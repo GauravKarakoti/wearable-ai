@@ -44,8 +44,8 @@ JEPA_MODEL_ID = "facebook/vjepa2-vitl-fpc64-256"
 QWEN_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 NUM_VIDEO_TOKENS = 16
 
-MANIFEST_PATH = "../egolongqa/wearable_ai_2026_egolongqa_val_700.jsonl"
-HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos"
+MANIFEST_PATH = "train.jsonl"
+HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos/egolongqa/val"
 
 BATCH_SIZE = 100
 ML_BATCH_SIZE = 8

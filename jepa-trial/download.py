@@ -14,10 +14,10 @@ from huggingface_hub import hf_hub_download
 HF_REPO_ID = "facebook/wearable-ai"
 HF_VIDEO_SUBDIR = "egolongqa/val"
 
-MANIFEST_PATH = "../egolongqa/wearable_ai_2026_egolongqa_val_700.jsonl"
-HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos"
+MANIFEST_PATH = "download.jsonl"
+HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_2"
 
-BATCH_SIZE = None
+BATCH_SIZE = 100
 
 
 def load_manifest():
