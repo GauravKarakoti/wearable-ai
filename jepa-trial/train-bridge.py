@@ -45,7 +45,7 @@ QWEN_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 NUM_VIDEO_TOKENS = 16
 
 MANIFEST_PATH = "../egolongqa/wearable_ai_2026_egolongqa_val_700.jsonl"
-HARD_DRIVE_VIDEO_DIR = "/mnt/your_2tb_drive/wearable_ai_videos"
+HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos"
 
 BATCH_SIZE = 100
 ML_BATCH_SIZE = 8
