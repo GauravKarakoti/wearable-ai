@@ -15,7 +15,7 @@ JEPA_MODEL_ID = "facebook/vjepa2-vitl-fpc64-256"
 NUM_VIDEO_TOKENS = 16
 
 MANIFEST_PATH = "encode.jsonl"
-HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_2/egolongqa/val"
+HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_4/egolongqa/val"
 
 DEVICE_OVERRIDE = None
 

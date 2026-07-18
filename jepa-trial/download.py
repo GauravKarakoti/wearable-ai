@@ -15,7 +15,7 @@ HF_REPO_ID = "facebook/wearable-ai"
 HF_VIDEO_SUBDIR = "egolongqa/val"
 
 MANIFEST_PATH = "download.jsonl"
-HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_3"
+HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_5"
 
 BATCH_SIZE = 100
 

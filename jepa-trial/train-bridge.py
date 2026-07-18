@@ -45,7 +45,7 @@ QWEN_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 NUM_VIDEO_TOKENS = 16
 
 MANIFEST_PATH = "train.jsonl"
-HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_2/egolongqa/val"
+HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_3/egolongqa/val"
 
 BATCH_SIZE = 100
 ML_BATCH_SIZE = 8
