@@ -15,14 +15,14 @@ JEPA_MODEL_ID = "facebook/vjepa2-vitl-fpc64-256"
 NUM_VIDEO_TOKENS = 16
 
 MANIFEST_PATH = "encode.jsonl"
-HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_6/egolongqa/val"
+HARD_DRIVE_VIDEO_DIR = "D:/wearable_ai_videos_6"
 
 DEVICE_OVERRIDE = None
 
 ENCODE_LIMIT = 100
 
 OUTPUT_DIR = "./trial_output"
-EMBEDDING_LIBRARY_DIR = os.path.join(OUTPUT_DIR, "embedding_library_2")
+EMBEDDING_LIBRARY_DIR = os.path.join(OUTPUT_DIR, "embedding_library")
 os.makedirs(EMBEDDING_LIBRARY_DIR, exist_ok=True)
 
 
