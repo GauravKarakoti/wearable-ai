@@ -1,0 +1,2 @@
+{"epoch": 1, "avg_train_loss": 1.8884564555924515, "held_out_loss": 1.9494997382164, "epoch_time_sec": 2085.708349943161, "saved": true, "best_loss_so_far": 1.8884564555924515, "timestamp": "2026-07-20T23:07:31.367045"}
+{"epoch": 2, "avg_train_loss": 1.8268021523267373, "held_out_loss": 1.971812617778778, "epoch_time_sec": 2082.1591572761536, "saved": true, "best_loss_so_far": 1.8268021523267373, "timestamp": "2026-07-20T23:42:33.066149"}
