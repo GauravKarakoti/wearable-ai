@@ -26,3 +26,4 @@
 {"epoch": 1, "avg_train_loss": 1.093850968212917, "held_out_loss": 3.1827887296676636, "epoch_time_sec": 3789.774186849594, "saved": true, "best_loss_so_far": 1.093850968212917, "timestamp": "2026-07-26T19:43:22.196564"}
 {"epoch": 2, "avg_train_loss": 1.0398644589144608, "held_out_loss": 3.1203439831733704, "epoch_time_sec": 2518.1637127399445, "saved": true, "best_loss_so_far": 1.0398644589144608, "timestamp": "2026-07-26T20:25:39.137664"}
 {"epoch": 3, "avg_train_loss": 1.0394083970579608, "held_out_loss": 3.4140882968902586, "epoch_time_sec": 2027.366562128067, "saved": true, "best_loss_so_far": 1.0394083970579608, "timestamp": "2026-07-26T20:59:45.441080"}
+{"epoch": 1, "avg_train_loss": 0.996997731855546, "held_out_loss": 3.0818065404891968, "epoch_time_sec": 2026.2368423938751, "saved": true, "best_loss_so_far": 0.996997731855546, "timestamp": "2026-07-27T21:08:37.791899"}
