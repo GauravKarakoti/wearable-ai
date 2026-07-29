@@ -1,5 +1,5 @@
 """
-test_persistent.py -- check whether the bridge still "remembers" earlier
+test-persistent.py -- check whether the bridge still "remembers" earlier
 batches after subsequent training runs on newer/larger batches.
 
 METRICS, per example:

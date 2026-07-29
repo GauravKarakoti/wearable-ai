@@ -1,5 +1,5 @@
 """
-download_remaining.py -- bulk download ONLY, no encoding, no training.
+download.py -- bulk download ONLY, no encoding, no training.
 
 Reads your full egolongqa manifest (jsonl), downloads every video not
 already present on the hard drive, and stops. Run this in chunks of
