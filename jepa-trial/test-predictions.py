@@ -31,7 +31,7 @@ OUTPUT_DIR = "./trial_output"
 EMBEDDING_LIBRARY_DIR = os.path.join(OUTPUT_DIR, "embedding_library")
 BRIDGE_CHECKPOINT_PATH = os.path.join(OUTPUT_DIR, "persistent_bridge.pt")
 
-PREDICTIONS_PATH = "./trial_output/predictions.jsonl"
+PREDICTIONS_PATH = "./trial_output/predictions_1.jsonl"
 
 PER_QUERY_WARN_THRESHOLD_SEC = 30
 
