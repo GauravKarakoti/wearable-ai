@@ -28,7 +28,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 QWEN_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 ML_BATCH_SIZE = 8
 LEARNING_RATE = 1e-4
-TARGET_LOSS = 0.6
+TARGET_LOSS = 0.7
 MAX_NEW_TOKENS = 256
 
 OUTPUT_DIR = "./trial_output"
