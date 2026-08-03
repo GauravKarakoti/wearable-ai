@@ -6,7 +6,7 @@ MCQ answers and report accuracy, overall and by category.
 import json
 from collections import defaultdict
 
-PREDICTIONS_PATH = "./trial_output/predictions_1.jsonl"
+PREDICTIONS_PATH = "./trial_output/predictions_2.jsonl"
 GROUND_TRUTH_PATH = "../egolongqa/wearable_ai_2026_egolongqa_val_700.jsonl"
 
 
