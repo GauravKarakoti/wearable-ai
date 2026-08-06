@@ -6,7 +6,7 @@ MCQ answers and report accuracy, overall and by category.
 import json
 from collections import defaultdict
 
-PREDICTIONS_PATH = "./trial_output/predictions_2.jsonl"
+PREDICTIONS_PATH = "./trial_output/predictions_2B.jsonl"
 GROUND_TRUTH_PATH = "../egolongqa/wearable_ai_2026_egolongqa_val_700.jsonl"
 
 
@@ -95,10 +95,10 @@ def main():
         print(f"  {category:30s}  {cat_correct:4d}/{cat_total:<4d}  {cat_acc*100:6.2f}%")
 
     if mismatches:
-        with open("./trial_output/incorrect_predictions.jsonl", "w") as f:
+        with open("./trial_output/incorrect_predictions_2B.jsonl", "w") as f:
             for m in mismatches:
                 f.write(json.dumps(m) + "\n")
-        print(f"\nSaved {len(mismatches)} incorrect predictions to ./incorrect_predictions.jsonl for inspection.")
+        print(f"\nSaved {len(mismatches)} incorrect predictions to ./incorrect_predictions_2B.jsonl for inspection.")
 
 
 if __name__ == "__main__":
