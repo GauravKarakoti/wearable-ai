@@ -170,17 +170,58 @@ def normalize_answer(raw: str) -> str:
     return upper[0] if upper[0] in "ABCD" else ""
 
 
+def _pair_to_golden(
+    golden: list[dict],
+    preds: list[dict],
+    task: str,
+) -> tuple[list[dict], list[dict]]:
+    """Pair predictions to golden by ``video_path`` when they carry one.
+
+    Order-independence is a property of *scoring*, not of the CLI wrapper, so
+    every public scorer routes through here rather than relying on
+    ``_run_longqa`` / ``_run_convqa`` / ``_run_proactive`` to have paired first.
+    A downstream harness that imports this module and calls ``evaluate_convqa``
+    directly then gets the same guarantee as one that shells out to the CLI.
+
+    Predictions with no ``video_path`` at all are left in the caller's order:
+    there is no id to pair on, and that shape means either a hand-built fixture
+    or input the caller already paired. A *mixed* batch is a genuine mistake and
+    warns, because the rows without an id are silently dropped.
+    """
+    if not preds:
+        return golden, preds
+    with_id = sum(1 for p in preds if p.get("video_path"))
+    if with_id == 0:
+        logger.debug(
+            "%s: no prediction carries a video_path — pairing by position", task
+        )
+        return golden, preds
+    if with_id != len(preds):
+        logger.warning(
+            "%s: only %d of %d predictions have a video_path — pairing by "
+            "video_path; rows without one are dropped",
+            task,
+            with_id,
+            len(preds),
+        )
+    return _filter_subset(golden, preds, task)
+
+
 def evaluate_longqa(
     golden: list[dict[str, object]],
     preds: list[dict[str, object]],
 ) -> dict[str, object]:
     """Evaluate LongQA MCQ predictions.
 
+    Predictions are paired to golden by ``video_path`` when they carry one, so
+    the result does not depend on the order rows are supplied in.
+
     Returns dict with accuracy, per-row results, and category breakdown.
 
     Raises:
-        ValueError: If golden and preds have different lengths.
+        ValueError: If golden and preds have different lengths after pairing.
     """
+    golden, preds = _pair_to_golden(golden, preds, "LongQA")
     if len(golden) != len(preds):
         raise ValueError(
             f"Golden ({len(golden)}) and predictions ({len(preds)}) "
@@ -334,22 +375,76 @@ def _build_judge_prompt(
     ]
 
 
-def _parse_judge_score(text: str) -> float:
-    """Parse the LLM judge output into 0.0, 0.5, or 1.0."""
-    text = text.strip().strip(".")
-    for token in text.split():
-        token = token.strip(".,;:")
-        try:
-            val = float(token)
-            if val >= 0.75:
-                return 1.0
-            elif val >= 0.25:
-                return 0.5
-            else:
-                return 0.0
-        except ValueError:
-            continue
+# Matches ".5", "1.0", "0." and "1". Deliberately does not strip a leading
+# decimal point: stripping it turns ".5" into "5".
+_JUDGE_NUMBER_RE: re.Pattern[str] = re.compile(r"\d*\.\d+|\d+\.?")
+# The judge prompt terminates with "Score:", so a labelled number is the score
+# even when the reply prefixed it with reasoning containing other numbers.
+_JUDGE_LABELLED_RE: re.Pattern[str] = re.compile(
+    r"score\s*[:=]\s*\**\s*(\d*\.\d+|\d+\.?)", re.IGNORECASE
+)
+
+
+def _to_judge_score(token: str) -> float | None:
+    """Map one numeric token to 0.0/0.5/1.0, or None if it is not a score."""
+    try:
+        val = float(token)
+    except ValueError:
+        return None
+    # A score lives on a 0-1 scale. Anything else is a number that happens to
+    # be in the reply ("Rating: 5 out of 5", "100% correct"), not a verdict.
+    if not 0.0 <= val <= 1.0:
+        return None
+    if val >= 0.75:
+        return 1.0
+    if val >= 0.25:
+        return 0.5
     return 0.0
+
+
+def _parse_judge_score_detailed(text: str) -> tuple[float, bool]:
+    """Parse an LLM judge reply into 0.0, 0.5 or 1.0.
+
+    Returns ``(score, parsed)``. ``parsed`` is False when the reply contained
+    no usable score; ``score`` is 0.0 in that case, but callers should treat it
+    as a grading failure rather than as the judge awarding zero. Without that
+    distinction a judge that bolded every reply would produce an EgoConv score
+    of 0.0 that is indistinguishable from a genuinely weak model.
+
+    Tolerates the ways a chat model decorates a number even when obeying
+    "reply with ONLY a single number": markdown emphasis (``**1.0**``),
+    backticks, quotes, brackets, a list dash, a fraction (``1.0/1.0``), a
+    decimal comma (``1,0``), and a bare leading or trailing decimal point
+    (``.5``, ``1.``).
+    """
+    if not text or not text.strip():
+        return 0.0, False
+
+    # Decimal comma ("1,0") but not a list ("1, 0").
+    cleaned = re.sub(r"(?<=\d),(?=\d)", ".", text)
+
+    m = _JUDGE_LABELLED_RE.search(cleaned)
+    if m is not None:
+        val = _to_judge_score(m.group(1))
+        if val is not None:
+            return val, True
+
+    for token in _JUDGE_NUMBER_RE.findall(cleaned):
+        val = _to_judge_score(token)
+        if val is not None:
+            return val, True
+
+    return 0.0, False
+
+
+def _parse_judge_score(text: str) -> float:
+    """Parse the LLM judge output into 0.0, 0.5, or 1.0.
+
+    Use :func:`_parse_judge_score_detailed` where an unparseable reply needs to
+    be told apart from a genuine 0.0.
+    """
+    score, _ = _parse_judge_score_detailed(text)
+    return score
 
 
 def _load_judge_model(
@@ -565,8 +660,15 @@ class _VllmJudgeServer:
                 except OSError:
                     pass
 
-    def score_turn(self, question: str, gold_ans: str, pred_ans: str) -> float:
-        """Send a single chat-completion request, return parsed judge score."""
+    def score_turn(
+        self, question: str, gold_ans: str, pred_ans: str
+    ) -> tuple[float, bool]:
+        """Send a single chat-completion request, return (score, scored).
+
+        ``scored`` is False when the 0.0 is a fallback -- the request failed,
+        the response had an unexpected shape, or the reply held no usable
+        score -- rather than a verdict the judge actually returned.
+        """
         import json as _json
         import urllib.request
 
@@ -590,13 +692,31 @@ class _VllmJudgeServer:
                 payload = _json.loads(resp.read())
         except (OSError, ValueError) as e:
             logger.warning("Judge request failed: %s", e)
-            return 0.0
+            return 0.0, False
         try:
             text = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             logger.warning("Unexpected judge response shape: %s", payload)
-            return 0.0
-        return _parse_judge_score(text)
+            return 0.0, False
+        score, parsed = _parse_judge_score_detailed(text)
+        if not parsed:
+            logger.warning("Unparseable judge reply, scoring 0.0: %r", text[:120])
+        return score, parsed
+
+
+def _log_judge_failures(unscored: int, total: int) -> None:
+    """Report turns that fell back to 0.0 without a judge verdict."""
+    if not unscored:
+        return
+    logger.warning(
+        "LLM judge: %d of %d turns (%.1f%%) produced no usable score and were "
+        "counted as 0.0. These are grading failures, not judge verdicts -- the "
+        "reported llm_judge value is understated by that much.",
+        unscored,
+        total,
+        100.0 * unscored / total if total else 0.0,
+    )
+    print(f"  WARNING: {unscored}/{total} judge turns had no usable score (scored 0.0)")
 
 
 def compute_llm_judge_scores(
@@ -653,6 +773,7 @@ def _judge_loop_hf(
     all_scores: list[list[float]] = []
     total_turns = sum(len(g["answers"]) for g in golden)
     done = 0
+    unscored = 0
 
     for i, (g, p) in enumerate(zip(golden, preds)):
         gold_answers: list[str] = g["answers"]
@@ -684,10 +805,19 @@ def _judge_loop_hf(
                     )
                 new_tokens = output_ids[0][inputs["input_ids"].shape[1] :]
                 text = processor.decode(new_tokens, skip_special_tokens=True)
-                score = _parse_judge_score(text)
+                score, parsed = _parse_judge_score_detailed(text)
+                if not parsed:
+                    unscored += 1
+                    logger.warning(
+                        "Unparseable judge reply at conv %d turn %d, scoring 0.0: %r",
+                        i,
+                        j,
+                        text[:120],
+                    )
             except (OSError, ValueError, RuntimeError) as e:
                 logger.warning("LLM judge error at conv %d turn %d: %s", i, j, e)
                 score = 0.0
+                unscored += 1
 
             turn_scores.append(score)
             done += 1
@@ -696,6 +826,7 @@ def _judge_loop_hf(
 
         all_scores.append(turn_scores)
 
+    _log_judge_failures(unscored, total_turns)
     return all_scores
 
 
@@ -717,6 +848,7 @@ def _judge_loop_vllm(
     all_scores: list[list[float]] = []
     total_turns = sum(len(g["answers"]) for g in golden)
     done = 0
+    unscored = 0
     with server:
         score_start = _time.time()
         last_print = score_start
@@ -733,7 +865,9 @@ def _judge_loop_vllm(
                     turn_scores.append(0.0)
                     done += 1
                     continue
-                score = server.score_turn(question, gold_ans, pred_ans)
+                score, scored = server.score_turn(question, gold_ans, pred_ans)
+                if not scored:
+                    unscored += 1
                 turn_scores.append(score)
                 done += 1
                 # Print at most every 5 turns OR every 30 s, whichever
@@ -757,6 +891,7 @@ def _judge_loop_vllm(
             f"  scoring done: {total_turns} turns in {total_elapsed:.0f}s "
             f"({total_elapsed / max(total_turns, 1):.1f}s/turn)"
         )
+    _log_judge_failures(unscored, total_turns)
     return all_scores
 
 
@@ -851,11 +986,15 @@ def evaluate_convqa(
 ) -> dict[str, object]:
     """Evaluate ConvQA predictions with BLEU and/or LLM-as-judge.
 
+    Predictions are paired to golden by ``video_path`` when they carry one, so
+    the result does not depend on the order rows are supplied in.
+
     Returns dict with aggregate scores, per-row breakdown, and category scores.
 
     Raises:
-        ValueError: If golden and preds have different lengths.
+        ValueError: If golden and preds have different lengths after pairing.
     """
+    golden, preds = _pair_to_golden(golden, preds, "ConvQA")
     if len(golden) != len(preds):
         raise ValueError(
             f"Golden ({len(golden)}) and predictions ({len(preds)}) "
@@ -1375,59 +1514,78 @@ def _filter_subset(
     preds: list[dict],
     task: str,
 ) -> tuple[list[dict], list[dict]]:
-    """Filter golden and preds to matching composite keys.
+    """Pair predictions to golden entries by ``video_path``.
 
-    LongQA uses ``(video_path, question)`` as the composite key.
-    ConvQA uses ``(video_path, task)`` because ConvQA entries have a ``task``
-    field instead of ``question`` (each entry is a multi-turn conversation).
+    ``video_path`` is the submission's row identifier: it is required of every
+    prediction row (``config.PREDICTION_KEYS``), every generator in this
+    starter kit emits it, and it is unique across all 700 rows of each released
+    config. Pairing on it makes scoring independent of the order rows appear
+    in, which matters because a submission is written by a participant's own
+    pipeline and may be batched or sharded in any order.
 
-    When predictions are a subset of golden (fewer entries), this filters
-    both lists to the intersection so evaluation proceeds on matched pairs.
-    Predictions missing ``video_path`` are logged as warnings and dropped.
-    Duplicate composite keys in predictions are deduplicated (first wins).
+    Do not key on ``question``/``task`` as well: neither is a required
+    prediction field, so a spec-compliant row has neither and would match
+    nothing.
+
+    Golden entries with no matching prediction are dropped, so a subset
+    submission scores over the rows it did supply. Predictions with no
+    ``video_path``, a duplicate one, or one absent from golden are dropped with
+    a warning; if that leaves nothing, the caller raises. There is deliberately
+    no positional fallback -- a file without ``video_path`` cannot be submitted
+    to the leaderboard at all, so scoring it locally by position would hand
+    back a number the leaderboard will never reproduce.
+
+    Raises ValueError if golden itself is unusable as a keyed lookup -- a row
+    with no ``video_path``, or two rows sharing one. Both are organizer-side
+    data defects that make a correct score impossible: the affected golden rows
+    could never be paired, so they would silently drop out of the denominator
+    and every submission would be scored over fewer rows than it answered.
+    Verified to hold on every released split (700/700 distinct on each of the
+    val configs, 948/948 and 901/901 on the longqa and convqa test splits).
+
     Returns (filtered_golden, filtered_preds).
     """
-    # ConvQA entries use "task" field, LongQA/Proactive use "question"
-    is_convqa = task.lower() == "convqa"
-    key_field = "task" if is_convqa else "question"
-
-    # Build lookup from golden
-    golden_by_key: dict[tuple[str | None, str | None], dict] = {}
-    for g in golden:
-        key = (g.get("video_path"), g.get(key_field))
-        if key in golden_by_key:
-            logger.warning(
-                "%s: duplicate golden key %s — keeping first, skipping duplicate",
-                task,
-                key,
+    golden_by_id: dict[str, dict] = {}
+    for i, g in enumerate(golden):
+        vp = g.get("video_path")
+        if not vp:
+            raise ValueError(
+                f"{task}: golden row {i} has no video_path. Predictions are "
+                "paired to golden by video_path, so every golden row needs one."
             )
-            continue
-        golden_by_key[key] = g
+        if vp in golden_by_id:
+            raise ValueError(
+                f"{task}: golden contains more than one row with video_path "
+                f"{vp!r}. Predictions are paired to golden by video_path, so "
+                "it must be unique within golden."
+            )
+        golden_by_id[vp] = g
 
     filtered_golden: list[dict] = []
     filtered_preds: list[dict] = []
-    seen_keys: set[tuple[str | None, str | None]] = set()
+    seen: set[str] = set()
     for p in preds:
         vp = p.get("video_path")
-        if vp is None:
+        if not vp:
+            logger.warning("%s: prediction missing video_path — skipping", task)
+            continue
+        if vp in seen:
             logger.warning(
-                "%s: prediction missing video_path — skipping: %s",
+                "%s: duplicate prediction video_path %s — keeping first, "
+                "skipping duplicate",
                 task,
-                {k: p.get(k) for k in (key_field, "mcq_answer")},
+                vp,
             )
             continue
-        key = (vp, p.get(key_field))
-        if key in seen_keys:
+        seen.add(vp)
+        g = golden_by_id.get(vp)
+        if g is None:
             logger.warning(
-                "%s: duplicate prediction key %s — keeping first, skipping duplicate",
-                task,
-                key,
+                "%s: prediction video_path %s not in golden — skipping", task, vp
             )
             continue
-        seen_keys.add(key)
-        if key in golden_by_key:
-            filtered_golden.append(golden_by_key[key])
-            filtered_preds.append(p)
+        filtered_golden.append(g)
+        filtered_preds.append(p)
 
     if not filtered_preds:
         logger.warning(
@@ -1455,19 +1613,23 @@ def _run_longqa(
     golden = load_jsonl(golden_path)
     preds = load_jsonl(preds_path)
 
+    # Pair by video_path unconditionally. Gating this on a length mismatch
+    # meant it never ran for a full-size submission -- the only kind the
+    # leaderboard accepts -- so scoring silently fell through to positional
+    # pairing and a correct-but-reordered submission lost about half its score.
     if len(golden) != len(preds):
         logger.warning(
             "LongQA golden has %d entries but predictions has %d — "
-            "filtering to matched subset",
+            "scoring the matched subset",
             len(golden),
             len(preds),
         )
-        golden, preds = _filter_subset(golden, preds, "LongQA")
-        if not preds:
-            raise ValueError(
-                "LongQA: zero predictions matched golden entries "
-                "-- check that prediction file has correct video_path and question fields"
-            )
+    golden, preds = _filter_subset(golden, preds, "LongQA")
+    if not preds:
+        raise ValueError(
+            "LongQA: zero predictions matched golden entries "
+            "-- check that prediction file has a video_path on every row"
+        )
 
     print(f"Evaluating LongQA: {len(golden)} samples")
     results = evaluate_longqa(golden, preds)
@@ -1502,19 +1664,20 @@ def _run_convqa(
     golden = load_jsonl(golden_path)
     preds = load_jsonl(preds_path)
 
+    # See the note in _run_longqa: pair by video_path unconditionally.
     if len(golden) != len(preds):
         logger.warning(
             "ConvQA golden has %d entries but predictions has %d — "
-            "filtering to matched subset",
+            "scoring the matched subset",
             len(golden),
             len(preds),
         )
-        golden, preds = _filter_subset(golden, preds, "ConvQA")
-        if not preds:
-            raise ValueError(
-                "ConvQA: zero predictions matched golden entries "
-                "-- check that prediction file has correct video_path and task fields"
-            )
+    golden, preds = _filter_subset(golden, preds, "ConvQA")
+    if not preds:
+        raise ValueError(
+            "ConvQA: zero predictions matched golden entries "
+            "-- check that prediction file has a video_path on every row"
+        )
 
     # Warn on turn-count mismatches
     for i, (g, p) in enumerate(zip(golden, preds)):
@@ -1602,31 +1765,60 @@ def _score_proactive_session(
     g: dict[str, object],
     p: dict[str, object],
     i: int,
-) -> tuple[dict[str, int], dict[str, object], int]:
-    """Score one proactive session. Returns (counts, per_row_entry, skipped_chunks)."""
+) -> tuple[dict[str, int], dict[str, object], int, int]:
+    """Score one proactive session.
+
+    Every gold chunk is scored. A gold chunk the submission did not answer
+    counts as an error against the gold label, mirroring how
+    :func:`compute_bleu_scores` and the ConvQA judge loop award 0.0 to missing
+    turns. Scoring only ``min(len(gold), len(pred))`` chunks would instead let
+    a submission raise its score by omitting chunks.
+
+    Prediction chunks beyond the gold length have nothing to score against and
+    are ignored.
+
+    Returns (counts, per_row_entry, unanswered_chunks, extra_pred_chunks).
+    """
     gold_answers: list[str] = g["answers"]  # type: ignore
     pred_answers: list[str] = p.get("answers", [])  # type: ignore
     task: str = str(g.get("task", "unknown"))
 
-    if len(gold_answers) != len(pred_answers):
+    unanswered = max(0, len(gold_answers) - len(pred_answers))
+    extra = max(0, len(pred_answers) - len(gold_answers))
+
+    if unanswered:
         logger.warning(
-            "Session %d (%s) has %d gold chunks but %d pred chunks; "
-            "scoring on the first min(gold,pred) chunks.",
+            "Session %d (%s) has %d gold chunks but only %d pred chunks; "
+            "the %d unanswered chunk(s) are scored as incorrect.",
             i,
             g.get("video_path", "?"),
             len(gold_answers),
             len(pred_answers),
+            unanswered,
+        )
+    elif extra:
+        logger.warning(
+            "Session %d (%s) has %d gold chunks but %d pred chunks; "
+            "ignoring the %d extra prediction chunk(s).",
+            i,
+            g.get("video_path", "?"),
+            len(gold_answers),
+            len(pred_answers),
+            extra,
         )
 
-    n = min(len(gold_answers), len(pred_answers))
-    skipped = abs(len(gold_answers) - len(pred_answers))
     counts = {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
     row_tags: list[dict[str, str]] = []
 
-    for j in range(n):
-        gold_tag = parse_tag(gold_answers[j])
-        pred_tag = parse_tag(pred_answers[j])
-        row_tags.append({"gold": gold_tag, "pred": pred_tag})
+    for j, gold_ans in enumerate(gold_answers):
+        gold_tag = parse_tag(gold_ans)
+        if j < len(pred_answers):
+            pred_tag = parse_tag(pred_answers[j])
+            row_tags.append({"gold": gold_tag, "pred": pred_tag})
+        else:
+            # No prediction for this chunk: score it against the gold label.
+            pred_tag = "silent" if gold_tag == "interrupt" else "interrupt"
+            row_tags.append({"gold": gold_tag, "pred": "(unanswered)"})
         if gold_tag == "interrupt" and pred_tag == "interrupt":
             counts["tp"] += 1
         elif gold_tag == "silent" and pred_tag == "interrupt":
@@ -1643,7 +1835,7 @@ def _score_proactive_session(
         "num_chunks": len(gold_answers),
         "tags": row_tags,
     }
-    return counts, per_row_entry, skipped
+    return counts, per_row_entry, unanswered, extra
 
 
 def score_proactive(
@@ -1655,14 +1847,27 @@ def score_proactive(
       - overall: binary_metrics dict for all chunks
       - per_task: {task: binary_metrics dict}
       - total_sessions: int
-      - skipped_chunks: int (count of length-mismatch chunks not scored)
+      - unanswered_chunks: int (gold chunks with no prediction; scored as errors)
+      - extra_pred_chunks: int (prediction chunks beyond gold length; ignored)
       - per_row: list of per-session breakdowns
 
-    Raises ValueError if golden and preds have different lengths.
+    Raises ValueError if golden and preds have different lengths, or if the
+    session count matches but the video_paths do not.
     """
     if len(golden) != len(preds):
         raise ValueError(
             f"golden has {len(golden)} entries but predictions has {len(preds)}"
+        )
+
+    # The count check above says nothing about order: 700 shuffled sessions
+    # still count to 700. Pair by video_path so scoring is order-independent.
+    n_before = len(preds)
+    golden, preds = _pair_to_golden(golden, preds, "Proactive")
+    if len(preds) != n_before:
+        raise ValueError(
+            f"{n_before} predictions supplied but only {len(preds)} have a "
+            "video_path present in golden -- check the prediction file "
+            "covers exactly the golden sessions"
         )
 
     tp = fp = tn = fn = 0
@@ -1670,10 +1875,11 @@ def score_proactive(
         lambda: {"tp": 0, "fp": 0, "tn": 0, "fn": 0}
     )
     per_row: list[dict[str, object]] = []
-    skipped_chunks = 0
+    unanswered_chunks = 0
+    extra_pred_chunks = 0
 
     for i, (g, p) in enumerate(zip(golden, preds)):
-        counts, row, skipped = _score_proactive_session(g, p, i)
+        counts, row, unanswered, extra = _score_proactive_session(g, p, i)
         task = str(row["task"])
         tp += counts["tp"]
         fp += counts["fp"]
@@ -1683,7 +1889,8 @@ def score_proactive(
         per_task[task]["fp"] += counts["fp"]
         per_task[task]["tn"] += counts["tn"]
         per_task[task]["fn"] += counts["fn"]
-        skipped_chunks += skipped
+        unanswered_chunks += unanswered
+        extra_pred_chunks += extra
         per_row.append(row)
 
     overall = binary_metrics(tp, fp, tn, fn)
@@ -1696,7 +1903,8 @@ def score_proactive(
         "overall": overall,
         "per_task": per_task_metrics,
         "total_sessions": len(golden),
-        "skipped_chunks": skipped_chunks,
+        "unanswered_chunks": unanswered_chunks,
+        "extra_pred_chunks": extra_pred_chunks,
         "per_row": per_row,
     }
 
@@ -1706,13 +1914,16 @@ def _print_proactive_summary(results: dict[str, object], output_path: str) -> No
     overall: dict[str, float] = results["overall"]  # type: ignore
     per_task_metrics: dict[str, dict[str, float]] = results["per_task"]  # type: ignore
     total_sessions: int = results["total_sessions"]  # type: ignore
-    skipped_chunks: int = results["skipped_chunks"]  # type: ignore
+    unanswered_chunks: int = results["unanswered_chunks"]  # type: ignore
+    extra_pred_chunks: int = results["extra_pred_chunks"]  # type: ignore
 
     print("\nProactive AI — Objective Duplex Metrics")
     print(f"  Sessions:       {total_sessions}")
     print(f"  Chunks scored:  {overall['support']}")
-    if skipped_chunks:
-        print(f"  Chunks skipped: {skipped_chunks} (length mismatch)")
+    if unanswered_chunks:
+        print(f"  Unanswered:     {unanswered_chunks} (scored as incorrect)")
+    if extra_pred_chunks:
+        print(f"  Extra ignored:  {extra_pred_chunks} (beyond gold length)")
     print(
         f"  Interrupt:      P={overall['interrupt_precision']:.3f} "
         f"R={overall['interrupt_recall']:.3f} F1={overall['interrupt_f1']:.3f}"

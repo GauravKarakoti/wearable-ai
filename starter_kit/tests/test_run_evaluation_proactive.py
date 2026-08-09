@@ -141,7 +141,8 @@ class ScoreProactiveTest(unittest.TestCase):
         results = ev.score_proactive(golden, preds)
         self.assertEqual(results["overall"]["macro_f1"], 1.0)
         self.assertEqual(results["total_sessions"], 1)
-        self.assertEqual(results["skipped_chunks"], 0)
+        self.assertEqual(results["unanswered_chunks"], 0)
+        self.assertEqual(results["extra_pred_chunks"], 0)
         self.assertIn("Cooking", results["per_task"])
         self.assertEqual(results["per_task"]["Cooking"]["macro_f1"], 1.0)
 
@@ -169,14 +170,131 @@ class ScoreProactiveTest(unittest.TestCase):
         self.assertEqual(results["per_task"]["Crafts"]["support"], 6)
         self.assertEqual(results["per_task"]["Crafts"]["macro_f1"], 1.0)
 
-    def test_length_mismatch_skips_extra_chunks(self) -> None:
+    def test_unanswered_gold_chunks_are_scored_as_errors(self) -> None:
         golden = [_session("a.mp4", "X", ["$interrupt$ x", "$silent$", "$silent$"])]
         preds = [{"video_path": "a.mp4", "answers": ["$interrupt$ x", "$silent$"]}]
         results = ev.score_proactive(golden, preds)
-        # Only the first 2 chunks are scored.
+        # Every gold chunk enters the confusion matrix, answered or not.
+        self.assertEqual(results["overall"]["support"], 3)
+        self.assertEqual(results["unanswered_chunks"], 1)
+        # tp=1, tn=1, and the unanswered gold-$silent$ chunk counts as fp.
+        self.assertEqual(results["overall"]["tp"], 1)
+        self.assertEqual(results["overall"]["tn"], 1)
+        self.assertEqual(results["overall"]["fp"], 1)
+        self.assertEqual(results["overall"]["fn"], 0)
+        self.assertEqual(results["overall"]["macro_f1"], 0.6667)
+
+    def test_extra_pred_chunks_are_ignored(self) -> None:
+        golden = [_session("a.mp4", "X", ["$interrupt$ x", "$silent$"])]
+        preds = [
+            {
+                "video_path": "a.mp4",
+                "answers": ["$interrupt$ x", "$silent$", "$interrupt$ junk"],
+            }
+        ]
+        results = ev.score_proactive(golden, preds)
         self.assertEqual(results["overall"]["support"], 2)
         self.assertEqual(results["overall"]["macro_f1"], 1.0)
-        self.assertEqual(results["skipped_chunks"], 1)
+        self.assertEqual(results["extra_pred_chunks"], 1)
+        self.assertEqual(results["unanswered_chunks"], 0)
+
+    def test_truncating_a_perfect_submission_lowers_the_score(self) -> None:
+        """Omitting chunks must never be free. Regression test for the
+        min(len(gold), len(pred)) truncation, under which a perfect submission
+        cut in half still scored a flawless 1.0."""
+        gold_answers = ["$interrupt$ a", "$silent$", "$interrupt$ b", "$silent$"]
+        golden = [_session("a.mp4", "X", gold_answers)]
+
+        full = ev.score_proactive(golden, [{"answers": list(gold_answers)}])
+        truncated = ev.score_proactive(golden, [{"answers": gold_answers[:2]}])
+
+        self.assertEqual(full["overall"]["macro_f1"], 1.0)
+        self.assertLess(truncated["overall"]["macro_f1"], 1.0)
+
+    def test_short_constant_list_cannot_beat_honest_baseline(self) -> None:
+        """A 2-chunk constant submission needs no model and answers 16 of 32
+        chunks. It must not outscore an honest full-length always-$silent$ run.
+
+        Under the old min(len(gold), len(pred)) truncation it scored 0.4667 to
+        the honest baseline's 0.4286 -- the shortcut won.
+        """
+        # Interrupt position rotates so the 2-chunk window cannot capture it.
+        golden = [
+            _session(
+                f"v{i}.mp4",
+                "X",
+                ["$interrupt$ a" if j == i % 4 else "$silent$" for j in range(4)],
+            )
+            for i in range(8)
+        ]
+
+        exploit = ev.score_proactive(
+            golden, [{"answers": ["$interrupt$ a", "$silent$"]} for _ in golden]
+        )
+        honest_silent = ev.score_proactive(
+            golden, [{"answers": ["$silent$"] * 4} for _ in golden]
+        )
+
+        self.assertLess(
+            exploit["overall"]["macro_f1"], honest_silent["overall"]["macro_f1"]
+        )
+        self.assertEqual(exploit["overall"]["support"], 32)
+        self.assertEqual(exploit["unanswered_chunks"], 16)
+
+    def test_equal_length_wrong_order(self) -> None:
+        """A full-length submission in the wrong order must still score 1.0.
+
+        score_proactive only ever checked the session *count*, never the
+        session order, so 700 shuffled rows passed the check and were then
+        paired positionally.
+        """
+        golden = [
+            _session("a.mp4", "X", ["$interrupt$ a", "$silent$"]),
+            _session("b.mp4", "Y", ["$silent$", "$interrupt$ b"]),
+            _session("c.mp4", "Z", ["$interrupt$ c", "$interrupt$ c2"]),
+        ]
+        preds = [
+            {"video_path": g["video_path"], "answers": list(g["answers"])}
+            for g in reversed(golden)
+        ]
+        results = ev.score_proactive(golden, preds)
+        self.assertEqual(results["overall"]["macro_f1"], 1.0)
+        self.assertEqual(results["overall"]["support"], 6)
+        self.assertEqual(results["unanswered_chunks"], 0)
+
+    def test_wrong_order_attributes_rows_correctly(self) -> None:
+        """Per-task breakdown must follow video_path, not row position.
+
+        Both sessions share the same gold sequence and the two predictions
+        differ, so positional pairing inverts the per-task result rather than
+        merely coinciding with it: pairing by position gives Cooking 1.0 /
+        Crafts 0.0, pairing by video_path gives Cooking 0.0 / Crafts 1.0.
+        """
+        golden = [
+            _session("a.mp4", "Cooking", ["$interrupt$ a", "$silent$"]),
+            _session("b.mp4", "Crafts", ["$interrupt$ b", "$silent$"]),
+        ]
+        # Crafts (b) answered perfectly; Cooking (a) answered wrongly.
+        preds = [
+            {"video_path": "b.mp4", "answers": ["$interrupt$ b", "$silent$"]},
+            {"video_path": "a.mp4", "answers": ["$silent$", "$interrupt$ x"]},
+        ]
+        results = ev.score_proactive(golden, preds)
+        self.assertEqual(results["per_task"]["Crafts"]["macro_f1"], 1.0)
+        self.assertEqual(results["per_task"]["Cooking"]["macro_f1"], 0.0)
+
+    def test_session_id_mismatch_raises(self) -> None:
+        """Right count, wrong IDs is a broken submission, not a subset."""
+        golden = [
+            _session("a.mp4", "X", ["$silent$"]),
+            _session("b.mp4", "X", ["$silent$"]),
+        ]
+        preds = [
+            {"video_path": "a.mp4", "answers": ["$silent$"]},
+            {"video_path": "zzz.mp4", "answers": ["$silent$"]},
+        ]
+        with self.assertRaises(ValueError):
+            ev.score_proactive(golden, preds)
 
     def test_missing_task_defaults_to_unknown(self) -> None:
         golden = [{"video_path": "a.mp4", "answers": ["$interrupt$ x"]}]

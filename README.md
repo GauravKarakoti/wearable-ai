@@ -179,6 +179,7 @@ Both licenses permit academic / research use only; commercial use is not granted
 
 ## Citation
 
+For datasets in general:
 ```bibtex
 @misc{wearableaiworkshop2026,
   title = {Wearable AI Workshop at ECCV 2026},
@@ -186,5 +187,18 @@ Both licenses permit academic / research use only; commercial use is not granted
   year = {2026},
   howpublished = {\url{https://wearable-ai-workshop.github.io/}},
   note = {Workshop at the European Conference on Computer Vision (ECCV) 2026}
+}
+```
+
+For EgoProactive dataset specifically:
+```bibtex
+@misc{kundu2026planwatchrecoverbenchmark,
+      title={Plan, Watch, Recover: A Benchmark and Architectures for Proactive Procedural Assistance}, 
+      author={Kaustav Kundu and Ritvik Shrivastava and Maxim Arap and Nanshu Wang and Xianhui Zhu and Quintin Fettes and Gautam Tiwari and Parth Suresh and Théo Moutakanni and Alejandro Castillejo Munoz and Allen Bolourchi and Pascale Fung and Pinar Donmez and Babak Damavandi and Anuj Kumar and Seungwhan Moon},
+      year={2026},
+      eprint={2606.04970},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2606.04970}, 
 }
 ```

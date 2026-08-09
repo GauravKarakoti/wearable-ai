@@ -1,0 +1,99 @@
+# Wearable AI ECCV 2026 -- Test Phase inference image.
+#
+# Base is pinned to a CUDA patch release because requirements.txt pins the cu128
+# torch wheels; Ubuntu 22.04 provides the Python 3.10 that requirements.txt was
+# validated against. (The starter_kit README's "Python 3.12 / cu124" prose
+# describes an older validated combination -- requirements.txt is the contract.)
+# Fully qualified on purpose: podman on the cluster defines no
+# unqualified-search registries, so a bare `nvidia/cuda:...` fails to resolve.
+#
+# Pinned by digest rather than tag so participants and organizers resolve
+# byte-identical bases. Tags are mutable -- `12.8.1-runtime-ubuntu22.04` can be
+# repushed upstream, which would silently diverge a participant's build from the
+# one we validated against.
+#   tag equivalent: docker.io/nvidia/cuda:12.8.1-runtime-ubuntu22.04
+FROM docker.io/nvidia/cuda@sha256:4a801ef9232d2b05e69df4eb8aa054dbbe2824e5499e1e6e857320bb01ac41a9
+
+# bash is NOT optional -- but it comes from the base image, not from a SHELL
+# directive. The evaluation runtime executes a `#!/bin/bash` script inside this
+# container, before any user code, and an image without bash dies at exit 127
+# with no output. Ubuntu provides it; a slim/busybox/distroless base would not.
+# (A `SHELL` directive is deliberately omitted: podman ignores it for OCI-format
+# images and only warns.)
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# ffmpeg: the benchmark videos are H.265, and frame extraction is on the critical
+# path. opencv-python-headless bundles its own ffmpeg, but the bundled build's
+# HEVC support varies by wheel -- the system codecs are cheap insurance.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.10 \
+        python3.10-dev \
+        python3-pip \
+        ffmpeg \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
+
+WORKDIR /app
+
+# Paths are relative to the starter kit directory, which is the build context.
+# Requirements before source so dependency layers survive code edits.
+COPY requirements.txt /app/requirements.txt
+
+# torch must come from the cu128 index first; a bare `pip install torch` resolves
+# to the CPU-only build and everything downstream silently runs on CPU.
+RUN pip install --no-cache-dir \
+        torch==2.10.0 torchvision==0.25.0 \
+        --index-url https://download.pytorch.org/whl/cu128 \
+    && pip install --no-cache-dir -r /app/requirements.txt
+
+COPY . /app/
+
+# Fail the build rather than a 16-node job if the stack is not importable.
+# torch.cuda.is_available() is deliberately NOT asserted -- there is no GPU
+# during build.
+RUN python -c "import torch, transformers, vllm, cv2; print(f'torch {torch.__version__} / transformers {transformers.__version__} / vllm {vllm.__version__}')"
+
+# /models is the single canonical location for model weights, for BOTH sides:
+# participants bake weights into it, and organizers can bind-mount over it
+# during development. Because the path is identical either way, the image and
+# the eval command are identical either way -- nothing about a submission has to
+# change between our dev loop and a real participant run.
+ENV WEARABLE_AI_MODEL_DIR=/models
+RUN mkdir -p /models
+
+# ---------------------------------------------------------------------------
+# Participant extension point
+# ---------------------------------------------------------------------------
+# 1. Bake your weights into /models:
+#
+#      COPY my_weights/ /models/my_model/
+#
+#    Weights must be in the image. Compute nodes cannot reach your storage, and
+#    fetching multi-GB checkpoints at eval time would count against the
+#    300 s/turn budget.
+#
+# 2. Register your model class in model.py's MODEL_REGISTRY and select it with
+#    `--model-type <your_key>`.
+#
+# 3. Do NOT hardcode dataset paths. Organizers pass `--video-folder`, `--golden`
+#    and `--predictions` at eval time and they will not match the relative paths
+#    (`../egolongqa/val/`) that work in a local clone during the validation phase.
+#
+# Inference limits enforced by the organizers: 300 s per generation/turn, and
+# one copy of your model must fit on ONE node of 8 x H100 80 GB. Up to 16 nodes
+# are used to evaluate faster, but that is parallelism across queries -- each
+# node runs its own full copy of this image -- so one node is the budget for a
+# copy. We do not shard a model across nodes. If yours needs more than one node,
+# contact the organizers before you build; that needs a custom image and our
+# agreement first.
+# ---------------------------------------------------------------------------
+
+# No ENTRYPOINT by design: the evaluation runtime invokes run_evaluation.py
+# explicitly, so an ENTRYPOINT here would be silently dropped and create a false
+# expectation.

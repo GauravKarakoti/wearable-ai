@@ -84,7 +84,12 @@ def longqa_golden_data():
 
 @pytest.fixture
 def longqa_preds_perfect(longqa_golden_data):
-    return [{"mcq_answer": g["mcq_answer"]} for g in longqa_golden_data]
+    # video_path is required of every real submission (config.PREDICTION_KEYS),
+    # so fixtures must carry it or they only pass via positional matching.
+    return [
+        {"video_path": g["video_path"], "mcq_answer": g["mcq_answer"]}
+        for g in longqa_golden_data
+    ]
 
 
 @pytest.fixture
@@ -121,7 +126,10 @@ def convqa_golden_data():
 
 @pytest.fixture
 def convqa_preds_perfect(convqa_golden_data):
-    return [{"answers": g["answers"][:]} for g in convqa_golden_data]
+    return [
+        {"video_path": g["video_path"], "answers": g["answers"][:]}
+        for g in convqa_golden_data
+    ]
 
 
 def write_jsonl(path, data):
@@ -315,6 +323,83 @@ class TestParseJudgeScore:
     def test_mixed_text_and_number(self):
         assert ev._parse_judge_score("Score: 1.0") == 1.0
         assert ev._parse_judge_score("I give it a 0.5 out of 1") == 0.5
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            # Markdown emphasis -- the single most likely real failure, and it
+            # does not violate "reply with ONLY a single number".
+            ("**1.0**", 1.0),
+            ("**0.5**", 0.5),
+            ("**0.0**", 0.0),
+            ("**Score: 1.0**", 1.0),
+            ("Score: **0.5**", 0.5),
+            # Quoting and bracketing.
+            ("`1.0`", 1.0),
+            ("'0.5'", 0.5),
+            ('"1.0"', 1.0),
+            ("[1.0]", 1.0),
+            ("(0.5)", 0.5),
+            ("- 1.0", 1.0),
+            # Fractions.
+            ("1.0/1.0", 1.0),
+            ("0.5/1.0", 0.5),
+            # Decimal comma.
+            ("1,0", 1.0),
+            # Leading/trailing decimal point.
+            (".5", 0.5),
+            ("0.", 0.0),
+            ("1.", 1.0),
+            # Labelled score wins over numbers in the preamble.
+            ("The answer mentions 3 correct facts. Score: 0.0", 0.0),
+            ("Score:\n1.0", 1.0),
+        ],
+    )
+    def test_realistic_judge_replies(self, raw, expected):
+        assert ev._parse_judge_score(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "Rating: 5 out of 5",  # 5 is not a score on a 0-1 scale
+            "I would say 100% correct",
+            "The answer mentions 3 correct facts. Score:",  # truncated at max_tokens
+            "correct",
+            "",
+            "   ",
+        ],
+    )
+    def test_unparseable_replies_are_flagged(self, raw):
+        """A reply with no usable score must be distinguishable from a 0.0.
+
+        Returning a bare 0.0 for both meant a judge that bolded every reply
+        produced an EgoConv score of 0.0 that looked like a weak model.
+        """
+        score, parsed = ev._parse_judge_score_detailed(raw)
+        assert parsed is False
+        assert score == 0.0
+
+    @pytest.mark.parametrize("raw", ["1.0", "0.5", "0.0", "**1.0**", "Score: 0.5"])
+    def test_parseable_replies_are_not_flagged(self, raw):
+        _, parsed = ev._parse_judge_score_detailed(raw)
+        assert parsed is True
+
+    def test_out_of_range_number_is_not_a_score(self):
+        """Values outside [0, 1] are not scores.
+
+        The old parser had no upper bound, so any number >= 0.75 anywhere in
+        the reply returned a perfect 1.0.
+        """
+        for raw in ["5", "100", "7.5", "Rating: 5 out of 5"]:
+            score, parsed = ev._parse_judge_score_detailed(raw)
+            assert parsed is False, raw
+            assert score == 0.0, raw
+
+    def test_returns_plain_float(self):
+        """_parse_judge_score keeps its float contract for existing callers."""
+        result = ev._parse_judge_score("1.0")
+        assert isinstance(result, float)
+        assert not isinstance(result, tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -611,10 +696,30 @@ class TestEvaluateConvqa:
         results = ev.evaluate_convqa([], [], run_bleu=True, run_llm_judge=False)
         assert results["total_conversations"] == 0
 
-    def test_length_mismatch_raises(self, convqa_golden_data):
-        preds = [convqa_golden_data[0]]
+    def test_length_mismatch_without_ids_raises(self, convqa_golden_data):
+        """No video_path to pair on, so a short batch is a length error."""
+        preds = [{"answers": ["something"]}]
         with pytest.raises(ValueError, match="must have the same number"):
             ev.evaluate_convqa(convqa_golden_data, preds)
+
+    def test_subset_with_ids_is_scored_not_rejected(self, convqa_golden_data):
+        """A short batch carrying video_path is a subset, not an error.
+
+        Pairing now happens inside evaluate_convqa, so a caller supplying
+        fewer rows than golden gets those rows scored -- matching what the
+        CLI has always done for subset submissions.
+        """
+        preds = [
+            {
+                "video_path": convqa_golden_data[0]["video_path"],
+                "answers": convqa_golden_data[0]["answers"][:],
+            }
+        ]
+        results = ev.evaluate_convqa(
+            convqa_golden_data, preds, run_bleu=True, run_llm_judge=False
+        )
+        assert results["total_conversations"] == 1
+        assert results["bleu"] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +852,170 @@ class TestCLIParsing:
 # ---------------------------------------------------------------------------
 
 
+class TestPairingHoldsOnDirectCalls:
+    """Pairing must be a property of the scorers, not of the CLI wrappers.
+
+    A downstream harness typically imports this module and calls
+    evaluate_longqa / evaluate_convqa / score_proactive directly rather than
+    shelling out to `run_evaluation.py --eval-only`. When pairing lived only in
+    the _run_* wrappers those callers silently kept positional pairing, so a
+    reordered submission scored as if it were wrong.
+    """
+
+    def test_evaluate_longqa_pairs_by_video_path(self, longqa_golden_data):
+        preds = [
+            {"video_path": g["video_path"], "mcq_answer": g["mcq_answer"]}
+            for g in reversed(longqa_golden_data)
+        ]
+        results = ev.evaluate_longqa(longqa_golden_data, preds)
+        assert results["accuracy"] == 1.0
+        assert results["total"] == 4
+
+    def test_evaluate_convqa_pairs_by_video_path(self, convqa_golden_data):
+        preds = [
+            {"video_path": g["video_path"], "answers": g["answers"][:]}
+            for g in reversed(convqa_golden_data)
+        ]
+        results = ev.evaluate_convqa(
+            convqa_golden_data, preds, run_bleu=True, run_llm_judge=False
+        )
+        assert results["bleu"] == 1.0
+
+    def test_score_proactive_pairs_by_video_path(self):
+        golden = [
+            {
+                "video_path": f"v{i}.mp4",
+                "task": "X",
+                "answers": ["$interrupt$ a", "$silent$"],
+            }
+            for i in range(3)
+        ]
+        preds = [
+            {"video_path": g["video_path"], "answers": list(g["answers"])}
+            for g in reversed(golden)
+        ]
+        results = ev.score_proactive(golden, preds)
+        assert results["overall"]["macro_f1"] == 1.0
+
+    def test_longqa_wrong_answer_attributed_to_right_row(self, longqa_golden_data):
+        """Guards against a fix that scores 1.0 while still pairing positionally."""
+        preds = []
+        for g in reversed(longqa_golden_data):
+            ans = "B" if g["video_path"] == "v1.mp4" else g["mcq_answer"]
+            preds.append({"video_path": g["video_path"], "mcq_answer": ans})
+        results = ev.evaluate_longqa(longqa_golden_data, preds)
+        assert results["correct"] == 3
+        wrong = [r for r in results["per_row"] if not r["correct"]]
+        assert len(wrong) == 1
+        assert wrong[0]["video_path"] == "v1.mp4"
+
+    def test_predictions_without_ids_still_pair_positionally(
+        self, longqa_golden_data
+    ):
+        """Hand-built fixtures and pre-paired input have no id to pair on."""
+        preds = [{"mcq_answer": g["mcq_answer"]} for g in longqa_golden_data]
+        results = ev.evaluate_longqa(longqa_golden_data, preds)
+        assert results["accuracy"] == 1.0
+
+    def test_mixed_id_presence_warns(self, longqa_golden_data, caplog):
+        preds = [
+            {"video_path": g["video_path"], "mcq_answer": g["mcq_answer"]}
+            for g in longqa_golden_data
+        ]
+        del preds[2]["video_path"]
+        with caplog.at_level(logging.WARNING):
+            ev.evaluate_longqa(longqa_golden_data, preds)
+        assert "have a video_path" in caplog.text
+
+
+class TestFilterSubset:
+    """video_path is the row identifier for pairing predictions to golden."""
+
+    def test_pairs_by_video_path_not_position(self, longqa_golden_data):
+        preds = [
+            {"video_path": g["video_path"], "mcq_answer": g["mcq_answer"]}
+            for g in reversed(longqa_golden_data)
+        ]
+        fg, fp = ev._filter_subset(longqa_golden_data, preds, "LongQA")
+        assert len(fg) == len(fp) == 4
+        for g, p in zip(fg, fp):
+            assert g["video_path"] == p["video_path"]
+            assert g["mcq_answer"] == p["mcq_answer"]
+
+    def test_ignores_absent_question_field(self, longqa_golden_data):
+        preds = [{"video_path": g["video_path"]} for g in longqa_golden_data]
+        fg, fp = ev._filter_subset(longqa_golden_data, preds, "LongQA")
+        assert len(fp) == 4
+
+    def test_convqa_ignores_absent_task_field(self, convqa_golden_data):
+        preds = [{"video_path": g["video_path"]} for g in convqa_golden_data]
+        fg, fp = ev._filter_subset(convqa_golden_data, preds, "ConvQA")
+        assert len(fp) == 2
+
+    def test_unknown_video_path_dropped(self, longqa_golden_data):
+        preds = [
+            {"video_path": "v2.mp4", "mcq_answer": "B"},
+            {"video_path": "nope.mp4", "mcq_answer": "A"},
+        ]
+        fg, fp = ev._filter_subset(longqa_golden_data, preds, "LongQA")
+        assert len(fp) == 1
+        assert fg[0]["video_path"] == "v2.mp4"
+
+    def test_duplicate_prediction_keeps_first(self, longqa_golden_data, caplog):
+        preds = [
+            {"video_path": "v2.mp4", "mcq_answer": "B"},
+            {"video_path": "v2.mp4", "mcq_answer": "D"},
+        ]
+        fg, fp = ev._filter_subset(longqa_golden_data, preds, "LongQA")
+        assert len(fp) == 1
+        assert fp[0]["mcq_answer"] == "B"
+        assert "duplicate prediction" in caplog.text
+
+    def test_prediction_missing_video_path_dropped(self, longqa_golden_data, caplog):
+        preds = [
+            {"video_path": "v2.mp4", "mcq_answer": "B"},
+            {"mcq_answer": "A"},
+        ]
+        fg, fp = ev._filter_subset(longqa_golden_data, preds, "LongQA")
+        assert len(fp) == 1
+        assert "missing video_path" in caplog.text
+
+    def test_duplicate_golden_video_path_raises(self):
+        """Pairing on video_path requires it to be unique within golden.
+
+        It is on every released split, but a future split that violated it
+        would otherwise drop the shadowed rows out of the denominator and
+        score every submission over fewer rows than it answered.
+        """
+        golden = [
+            {"video_path": "dup.mp4", "question": "a?", "mcq_answer": "A"},
+            {"video_path": "dup.mp4", "question": "b?", "mcq_answer": "B"},
+        ]
+        preds = [{"video_path": "dup.mp4", "mcq_answer": "A"}]
+        with pytest.raises(ValueError, match="more than one row with video_path"):
+            ev._filter_subset(golden, preds, "LongQA")
+
+    def test_golden_row_without_video_path_raises(self):
+        golden = [
+            {"video_path": "v1.mp4", "question": "a?", "mcq_answer": "A"},
+            {"question": "b?", "mcq_answer": "B"},
+        ]
+        preds = [{"video_path": "v1.mp4", "mcq_answer": "A"}]
+        with pytest.raises(ValueError, match="golden row 1 has no video_path"):
+            ev._filter_subset(golden, preds, "LongQA")
+
+    def test_no_positional_fallback_when_ids_absent(self, longqa_golden_data):
+        """A prediction file with no video_path matches nothing.
+
+        There is deliberately no positional fallback: such a file is rejected
+        by the leaderboard, so scoring it locally by position would report a
+        number the leaderboard will never reproduce.
+        """
+        preds = [{"mcq_answer": g["mcq_answer"]} for g in longqa_golden_data]
+        fg, fp = ev._filter_subset(longqa_golden_data, preds, "LongQA")
+        assert fp == []
+
+
 class TestE2ELongqa:
     def test_full_pipeline(self, tmp_dir, longqa_golden_data, longqa_preds_perfect):
         golden_path = os.path.join(tmp_dir, "golden.jsonl")
@@ -763,6 +1032,91 @@ class TestE2ELongqa:
             results = json.load(f)
         assert results["accuracy"] == 1.0
         assert results["total"] == 4
+
+    def test_equal_length_wrong_order(self, tmp_dir, longqa_golden_data):
+        """A full-length submission in the wrong order must still score 1.0.
+
+        This is the path every real submission takes: the row count always
+        matches golden, so any matcher gated behind a length mismatch never
+        runs. Before video_path keying was applied unconditionally, a perfect
+        but reordered 700-row submission scored ~0.48 with no warning.
+        """
+        golden_path = os.path.join(tmp_dir, "golden.jsonl")
+        preds_path = os.path.join(tmp_dir, "preds.jsonl")
+        output_path = os.path.join(tmp_dir, "results.json")
+
+        preds = [
+            {"video_path": g["video_path"], "mcq_answer": g["mcq_answer"]}
+            for g in reversed(longqa_golden_data)
+        ]
+        write_jsonl(golden_path, longqa_golden_data)
+        write_jsonl(preds_path, preds)
+
+        ev._run_longqa(golden_path, preds_path, output_path)
+
+        with open(output_path) as f:
+            results = json.load(f)
+        assert results["total"] == 4
+        assert results["accuracy"] == 1.0
+
+    def test_equal_length_wrong_order_is_not_positional(
+        self, tmp_dir, longqa_golden_data
+    ):
+        """Reordering must change nothing, including which answers are wrong.
+
+        Guards against a fix that happens to score 1.0 on a perfect reordered
+        submission while still pairing rows positionally.
+        """
+        golden_path = os.path.join(tmp_dir, "golden.jsonl")
+        preds_path = os.path.join(tmp_dir, "preds.jsonl")
+        output_path = os.path.join(tmp_dir, "results.json")
+
+        # v1 is answered wrongly; the other three are right. Order is reversed.
+        preds = []
+        for g in reversed(longqa_golden_data):
+            ans = "B" if g["video_path"] == "v1.mp4" else g["mcq_answer"]
+            preds.append({"video_path": g["video_path"], "mcq_answer": ans})
+        write_jsonl(golden_path, longqa_golden_data)
+        write_jsonl(preds_path, preds)
+
+        ev._run_longqa(golden_path, preds_path, output_path)
+
+        with open(output_path) as f:
+            results = json.load(f)
+        assert results["total"] == 4
+        assert results["correct"] == 3
+        # The wrong answer must be attributed to v1, not to whatever row sat
+        # in v1's position after reversing.
+        wrong = [r for r in results["per_row"] if not r["correct"]]
+        assert len(wrong) == 1
+        assert wrong[0]["video_path"] == "v1.mp4"
+
+    def test_spec_compliant_subset_without_question_field(
+        self, tmp_dir, longqa_golden_data
+    ):
+        """A partial submission carrying only the required keys must match.
+
+        'question' is not in config.PREDICTION_KEYS, so a spec-compliant row
+        has no question field. Keying on (video_path, question) matched zero
+        such rows and the run died with "zero predictions matched".
+        """
+        golden_path = os.path.join(tmp_dir, "golden.jsonl")
+        preds_path = os.path.join(tmp_dir, "preds.jsonl")
+        output_path = os.path.join(tmp_dir, "results.json")
+
+        preds = [
+            {"video_path": g["video_path"], "mcq_answer": g["mcq_answer"]}
+            for g in longqa_golden_data[:2]
+        ]
+        write_jsonl(golden_path, longqa_golden_data)
+        write_jsonl(preds_path, preds)
+
+        ev._run_longqa(golden_path, preds_path, output_path)
+
+        with open(output_path) as f:
+            results = json.load(f)
+        assert results["total"] == 2
+        assert results["accuracy"] == 1.0
 
     @pytest.mark.parametrize(
         "indices",
@@ -800,7 +1154,7 @@ class TestE2ELongqa:
         preds_path = os.path.join(tmp_dir, "preds.jsonl")
         output_path = os.path.join(tmp_dir, "results.json")
 
-        # One valid prediction (with question for composite key) + one unknown
+        # One valid prediction + one whose video_path is absent from golden
         preds = [
             {
                 "video_path": longqa_golden_data[0]["video_path"],
@@ -831,7 +1185,7 @@ class TestE2ELongqa:
         preds_path = os.path.join(tmp_dir, "preds.jsonl")
         output_path = os.path.join(tmp_dir, "results.json")
 
-        # One valid prediction (with question for composite key) + one missing video_path
+        # One valid prediction + one with no video_path at all
         preds = [
             {
                 "video_path": longqa_golden_data[0]["video_path"],
@@ -857,10 +1211,9 @@ class TestE2ELongqa:
     def test_subset_preds_outnumber_golden(self, tmp_dir, longqa_golden_data):
         """When predictions outnumber golden, extra unknown preds are dropped.
 
-        The subset filtering matches predictions against golden by the
-        (video_path, question) composite key.  Extra predictions whose keys
-        are absent from golden are silently dropped, and only the matched
-        subset is evaluated.
+        The subset filtering matches predictions against golden by
+        video_path.  Extra predictions whose video_path is absent from golden
+        are dropped with a warning, and only the matched subset is evaluated.
         """
         golden_path = os.path.join(tmp_dir, "golden.jsonl")
         preds_path = os.path.join(tmp_dir, "preds.jsonl")
@@ -910,7 +1263,7 @@ class TestE2ELongqa:
 
         Creates golden with 4 entries but predictions with only 2 matching
         entries, one correct and one wrong.  Verifies that subset filtering
-        matches by composite key AND accuracy reflects the imperfect predictions.
+        matches by video_path AND accuracy reflects the imperfect predictions.
         """
         golden_path = os.path.join(tmp_dir, "golden.jsonl")
         preds_path = os.path.join(tmp_dir, "preds.jsonl")
@@ -948,11 +1301,10 @@ class TestE2ELongqa:
     # ---------------------------------------------------------------------------
 
     def test_subset_duplicate_pred_keys(self, tmp_dir, longqa_golden_data, caplog):
-        """Duplicate composite keys in predictions are deduplicated (first wins).
+        """Duplicate prediction video_paths are deduplicated (first wins).
 
-        When two predictions share the same (video_path, question) key, only
-        the first is kept.  This prevents a single golden entry from being
-        counted multiple times, which would inflate evaluation metrics.
+        This prevents a single golden entry from being counted multiple
+        times, which would inflate evaluation metrics.
         """
         golden_path = os.path.join(tmp_dir, "golden.jsonl")
         preds_path = os.path.join(tmp_dir, "preds.jsonl")
@@ -980,7 +1332,7 @@ class TestE2ELongqa:
         with caplog.at_level(logging.WARNING):
             ev._run_longqa(golden_path, preds_path, output_path)
 
-        assert "duplicate prediction key" in caplog.text
+        assert "duplicate prediction video_path" in caplog.text
         assert os.path.exists(output_path)
         with open(output_path) as f:
             results = json.load(f)
@@ -994,6 +1346,37 @@ class TestE2ELongqa:
 
 
 class TestE2EConvqa:
+    def test_equal_length_wrong_order(self, tmp_dir, convqa_golden_data):
+        """A full-length ConvQA submission in the wrong order must score 1.0.
+
+        Reordering previously pushed BLEU on a perfect submission to ~0.03,
+        a near-total collapse, with only a per-conversation turn-count warning
+        to hint at the cause.
+        """
+        golden_path = os.path.join(tmp_dir, "golden.jsonl")
+        preds_path = os.path.join(tmp_dir, "preds.jsonl")
+        output_path = os.path.join(tmp_dir, "results.json")
+
+        preds = [
+            {"video_path": g["video_path"], "answers": g["answers"][:]}
+            for g in reversed(convqa_golden_data)
+        ]
+        write_jsonl(golden_path, convqa_golden_data)
+        write_jsonl(preds_path, preds)
+
+        ev._run_convqa(
+            golden_path,
+            preds_path,
+            output_path,
+            run_llm_judge=False,
+            judge_model="",
+            judge_batch_size=1,
+        )
+
+        with open(output_path) as f:
+            results = json.load(f)
+        assert results["bleu"] == 1.0
+
     def test_full_pipeline_bleu_only(
         self, tmp_dir, convqa_golden_data, convqa_preds_perfect
     ):
@@ -1110,10 +1493,9 @@ class TestE2EConvqa:
     def test_subset_preds_outnumber_golden(self, tmp_dir, convqa_golden_data):
         """When predictions outnumber golden, extra unknown preds are dropped.
 
-        The subset filtering matches predictions against golden by the
-        (video_path, task) composite key.  Extra predictions whose keys
-        are absent from golden are silently dropped, and only the matched
-        subset is evaluated.
+        The subset filtering matches predictions against golden by
+        video_path.  Extra predictions whose video_path is absent from golden
+        are dropped with a warning, and only the matched subset is evaluated.
         """
         golden_path = os.path.join(tmp_dir, "golden.jsonl")
         preds_path = os.path.join(tmp_dir, "preds.jsonl")
@@ -1173,7 +1555,7 @@ class TestE2EConvqa:
 
         Creates golden with 2 entries but predictions with only 1 matching
         entry whose answers are deliberately wrong.  Verifies that subset
-        filtering matches by (video_path, task) composite key AND BLEU
+        filtering matches by video_path AND BLEU
         reflects the imperfect predictions (low but non-zero).
         """
         golden_path = os.path.join(tmp_dir, "golden.jsonl")
@@ -1215,14 +1597,11 @@ class TestE2EConvqa:
     # ---------------------------------------------------------------------------
 
     def test_subset_duplicate_pred_keys(self, tmp_dir, convqa_golden_data, caplog):
-        """Duplicate composite keys in predictions are deduplicated (first wins).
+        """Duplicate prediction video_paths are deduplicated (first wins).
 
-        When two predictions share the same (video_path, task) key, only
-        the first is kept.  This prevents a single golden entry from being
-        counted multiple times, which would inflate evaluation metrics.
-
-        We send 3 predictions (2 for g0 with same key + 1 for g1) so that
-        ``len(preds) != len(golden)`` triggers the ``_filter_subset`` path.
+        When two predictions share a video_path, only the first is kept. This
+        prevents a single golden entry from being counted multiple times,
+        which would inflate evaluation metrics.
         After dedup the duplicate is dropped, leaving 2 matched predictions.
         """
         golden_path = os.path.join(tmp_dir, "golden.jsonl")
@@ -1266,7 +1645,7 @@ class TestE2EConvqa:
                 judge_batch_size=1,
             )
 
-        assert "duplicate prediction key" in caplog.text
+        assert "duplicate prediction video_path" in caplog.text
         assert os.path.exists(output_path)
         with open(output_path) as f:
             results = json.load(f)
