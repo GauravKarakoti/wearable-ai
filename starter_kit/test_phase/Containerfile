@@ -45,19 +45,34 @@ WORKDIR /app
 # Requirements before source so dependency layers survive code edits.
 COPY requirements.txt /app/requirements.txt
 
+# CACHING NOTE: split into two RUN instructions on purpose. Docker/Podman only
+# cache at instruction granularity -- combining these into one `&&`-chained RUN
+# means a failure in the second half (e.g. a requirements.txt dependency
+# conflict or a flaky package index) forces the multi-GB cu128 torch download
+# in the first half to redo too on every retry. Splitting them means a failed
+# retry only redoes whichever half actually failed.
+#
 # torch must come from the cu128 index first; a bare `pip install torch` resolves
 # to the CPU-only build and everything downstream silently runs on CPU.
 RUN pip install --no-cache-dir \
         torch==2.10.0 torchvision==0.25.0 \
-        --index-url https://download.pytorch.org/whl/cu128 \
-    && pip install --no-cache-dir -r /app/requirements.txt
+        --index-url https://download.pytorch.org/whl/cu128
 
-COPY . /app/
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Fail the build rather than a 16-node job if the stack is not importable.
+# numpy and PIL added to this check: JepaBridgeModel (model.py) imports both
+# directly for frame resampling, so a missing/broken install fails here, at
+# build time, rather than 300s into a real evaluation query.
+#
+# CACHING NOTE: deliberately placed BEFORE any COPY instruction. This check
+# only depends on installed packages, not on source code or weights, so
+# keeping it here means editing model.py or re-baking weights never forces
+# this check to redo, and it still catches a broken environment as early as
+# possible either way.
 # torch.cuda.is_available() is deliberately NOT asserted -- there is no GPU
 # during build.
-RUN python -c "import torch, transformers, vllm, cv2; print(f'torch {torch.__version__} / transformers {transformers.__version__} / vllm {vllm.__version__}')"
+RUN python -c "import torch, transformers, vllm, cv2, numpy, PIL; print(f'torch {torch.__version__} / transformers {transformers.__version__} / vllm {vllm.__version__} / numpy {numpy.__version__} / PIL {PIL.__version__}')"
 
 # /models is the single canonical location for model weights, for BOTH sides:
 # participants bake weights into it, and organizers can bind-mount over it
@@ -93,6 +108,35 @@ RUN mkdir -p /models
 # contact the organizers before you build; that needs a custom image and our
 # agreement first.
 # ---------------------------------------------------------------------------
+
+# JepaBridgeModel: frozen V-JEPA2 encoder + trained MLP bridge + frozen
+# Qwen2.5-1.5B-Instruct, registered under model_type "jepa_bridge" in
+# model.py's MODEL_REGISTRY / DEFAULT_MODEL_IDS (the latter already points at
+# this exact path -- keep them in sync if you ever rename either side).
+#
+# Directory built locally BEFORE this Containerfile runs.
+#
+# CACHING NOTE: this COPY is placed BEFORE `COPY . /app/` below on purpose.
+# Weights change rarely (once you're happy with a checkpoint) and are slow to
+# copy (multi-GB); source code changes constantly while you're debugging. By
+# copying weights first, editing model.py only invalidates the cheap, fast
+# `COPY . /app/` layer after it -- not this one. If you ever re-bake a new
+# checkpoint into jepa_bridge_qwen/, THIS layer (and everything after it,
+# including the source copy) redoes, which is correct and unavoidable, but
+# that should be rare compared to code edits.
+#
+# Expected layout, all already resolved to real files (no HF hub IDs, no
+# network access needed at build OR eval time):
+#   jepa_bridge_qwen/jepa/       -- V-JEPA2 encoder + processor
+#   jepa_bridge_qwen/qwen/       -- Qwen2.5-1.5B-Instruct + tokenizer
+#   jepa_bridge_qwen/bridge.pt   -- trained bridge state_dict
+COPY jepa_bridge_qwen/ /models/jepa_bridge_qwen/
+
+# Source code last: this is the layer that changes most often during
+# iteration, so it's kept as the final, cheapest-to-redo step. A rebuild after
+# only editing model.py (or any other source file) now only redoes this one
+# COPY, not the apt/pip installs above it or the weights COPY above it.
+COPY . /app/
 
 # No ENTRYPOINT by design: the evaluation runtime invokes run_evaluation.py
 # explicitly, so an ENTRYPOINT here would be silently dropped and create a false

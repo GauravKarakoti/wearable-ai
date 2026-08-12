@@ -1,0 +1,10 @@
+# Ignore python virtual environments
+venv/
+
+# Ignore git and cache files
+.git/
+__pycache__/
+*.pyc
+
+# Ignore previous docker tarballs if any exist
+*.tar

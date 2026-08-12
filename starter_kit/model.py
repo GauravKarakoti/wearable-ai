@@ -6,6 +6,7 @@ Provides:
   - VideoQAModel: abstract base class — subclass to plug in your own model
   - Llama4ScoutModel: default implementation using Llama 4 Scout
   - Qwen2VLModel: Qwen2.5-VL implementation
+    Qwen2.5-1.5B-Instruct, scored via per-option teacher-forced loss
   - create_model(): factory to instantiate by model type name
 
 Setup:
@@ -14,7 +15,7 @@ Setup:
 """
 
 from __future__ import annotations
-
+from jepa_bridge_model import JepaBridgeModel
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -840,26 +841,31 @@ class VLLMModel(VideoQAModel):
 MODEL_REGISTRY: dict[str, type[VideoQAModel]] = {
     "llama4": Llama4ScoutModel,
     "qwen": Qwen2VLModel,
+    "jepa_bridge": JepaBridgeModel,
 }
 
 DEFAULT_MODEL_IDS: dict[str, str] = {
     "llama4": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     "qwen": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "jepa_bridge": "/models/jepa_bridge_qwen",    # Local, baked-in directory -- NOT a Hugging Face hub id.
 }
 
 DEFAULT_BATCH_SIZES: dict[str, int] = {
     "llama4": 4,
     "qwen": 8,
+    "jepa_bridge": 1,
 }
 
 DEFAULT_GPU_COUNTS: dict[str, int] = {
     "llama4": 8,
     "qwen": 1,
+    "jepa_bridge": 1,
 }
 
 DEFAULT_TP_SIZES: dict[str, int] = {
     "llama4": 8,
     "qwen": 1,
+    "jepa_bridge": 1,
 }
 
 
@@ -956,9 +962,10 @@ def create_model(
     """Factory to create a model by type name.
 
     Args:
-        model_type: One of "llama4", "qwen".
-        model_id: HuggingFace model ID override. If None, uses the default
-            for the given model_type.
+        model_type: One of "llama4", "qwen", "jepa_bridge".
+        model_id: HuggingFace model ID (or, for jepa_bridge, a local baked-in
+            directory) override. If None, uses the default for the given
+            model_type.
         backend: "hf" for HuggingFace, "vllm" for vLLM server backend.
         tp_size: Tensor parallel size (vllm only). None = auto per model type.
         concurrency: Max concurrent HTTP requests (vllm only).

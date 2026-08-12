@@ -9,3 +9,5 @@ output/
 videos/
 data/
 *.log
+venv
+jepa_bridge_qwen

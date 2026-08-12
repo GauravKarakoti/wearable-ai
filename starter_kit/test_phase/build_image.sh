@@ -60,7 +60,7 @@ else
   exit 1
 fi
 
-BUILD_ARGS=(build --tag "$TAG" --file "$HERE/Containerfile")
+BUILD_ARGS=(build --network=host --tag "$TAG" --file "$HERE/Containerfile")
 [ -n "$ISOLATION" ] && BUILD_ARGS+=(--isolation "$ISOLATION")
 
 echo "==> Building $TAG with $ENGINE${ISOLATION:+ (isolation=$ISOLATION)}"
